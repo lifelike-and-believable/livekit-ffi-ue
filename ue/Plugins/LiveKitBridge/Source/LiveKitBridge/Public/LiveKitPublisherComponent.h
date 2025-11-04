@@ -16,7 +16,7 @@ public:
     virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
-    UFUNCTION(BlueprintCallable, Category="LiveKit")
+    // Native-only entry (int16 is not a Blueprint-supported element type)
     void PushAudioPCM(const TArray<int16>& InterleavedFrames, int32 FramesPerChannel);
 
     UFUNCTION(BlueprintCallable, Category="LiveKit")

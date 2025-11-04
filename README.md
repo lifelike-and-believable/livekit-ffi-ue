@@ -53,3 +53,10 @@ Enable the plugin, add `ULiveKitPublisherComponent` to an actor, set `RoomUrl` &
 - **CRT on Windows:** default is dynamic (/MD). Only switch to static CRT if your UE build does.
 
 MIT
+
+## Local LiveKit server (quickstart)
+
+If you need a local media server for testing, see:
+
+docs/LOCAL_LIVEKIT_QUICKSTART.md
+
