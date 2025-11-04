@@ -1,0 +1,13 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.6",
+  "Category": "",
+  "Description": "LiveKit sandbox project for UE 5.6 testing.",
+  "Modules": [
+    { "Name": "LiveKitSandbox", "Type": "Runtime", "LoadingPhase": "Default" }
+  ],
+  "Plugins": [
+    { "Name": "LiveKitBridge", "Enabled": true }
+  ],
+  "TargetPlatforms": [ "Windows" ]
+}

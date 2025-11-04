@@ -1,11 +1,16 @@
 #include "LiveKitPublisherComponent.h"
 #include "LiveKitClient.hpp"
+DEFINE_LOG_CATEGORY_STATIC(LogLiveKitBridge, Log, All);
 
 void ULiveKitPublisherComponent::BeginPlay()
 {
     Super::BeginPlay();
     Client = new LiveKitClient();
-    Client->Connect(TCHAR_TO_ANSI(*RoomUrl), TCHAR_TO_ANSI(*Token));
+    const bool bOk = Client->Connect(TCHAR_TO_UTF8(*RoomUrl), TCHAR_TO_UTF8(*Token));
+    if (!bOk)
+    {
+        UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed for %s"), *RoomUrl);
+    }
 }
 
 void ULiveKitPublisherComponent::EndPlay(const EEndPlayReason::Type Reason)
@@ -18,7 +23,11 @@ void ULiveKitPublisherComponent::PushAudioPCM(const TArray<int16>& InterleavedFr
 {
     if (Client && InterleavedFrames.Num() > 0)
     {
-        Client->PublishPCM(InterleavedFrames.GetData(), (size_t)FramesPerChannel, Channels, SampleRate);
+        const bool bOk = Client->PublishPCM(InterleavedFrames.GetData(), (size_t)FramesPerChannel, Channels, SampleRate);
+        if (!bOk)
+        {
+            UE_LOG(LogLiveKitBridge, Verbose, TEXT("PublishPCM failed (%d frames/ch)"), FramesPerChannel);
+        }
     }
 }
 
@@ -26,6 +35,10 @@ void ULiveKitPublisherComponent::SendMocap(const TArray<uint8>& Payload, bool bR
 {
     if (Client && Payload.Num() > 0)
     {
-        Client->SendData(Payload.GetData(), (size_t)Payload.Num(), bReliable);
+        const bool bOk = Client->SendData(Payload.GetData(), (size_t)Payload.Num(), bReliable);
+        if (!bOk)
+        {
+            UE_LOG(LogLiveKitBridge, Verbose, TEXT("SendMocap failed (%d bytes, reliable=%s)"), Payload.Num(), bReliable ? TEXT("true") : TEXT("false"));
+        }
     }
 }

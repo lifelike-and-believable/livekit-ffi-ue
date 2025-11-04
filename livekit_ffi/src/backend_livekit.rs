@@ -4,6 +4,7 @@
 //! Underruns are zero-padded; overflow drops tail to avoid stalling UE audio.
 
 use std::ffi::{CStr, CString};
+use std::borrow::Cow;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex};
@@ -12,16 +13,16 @@ use anyhow::Result;
 use once_cell::sync::OnceCell;
 use rtrb::{Producer, RingBuffer};
 use tokio::{
-    io::AsyncWriteExt,
     runtime::Runtime,
     time::{interval, Duration},
 };
 
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
-use livekit::room::RoomOptions;
-use livekit::{ByteStreamWriter, StreamByteOptions};
-use livekit::webrtc::native::NativeAudioSource;
+use livekit::RoomOptions;
+use livekit::{ByteStreamWriter, StreamByteOptions, StreamWriter};
+use livekit::webrtc::audio_source::{native::NativeAudioSource, AudioSourceOptions, RtcAudioSource};
+use livekit::webrtc::prelude::AudioFrame;
 
 // --------- C ABI surface ---------
 
@@ -69,9 +70,6 @@ pub struct LkClientHandle {
 
 struct AudioRing {
     prod: Producer<i16>,
-    sample_rate: u32,
-    channels: u32,
-    frame_10ms: usize, // interleaved samples per 10ms
 }
 
 struct ClientState {
@@ -192,13 +190,13 @@ pub extern "C" fn lk_disconnect(client: *mut LkClientHandle) -> LkResult {
 // Ensure NativeAudioSource + ring consumer exist (lazy init).
 fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -> Result<()> {
     if g.audio_src.is_none() {
-        let src = NativeAudioSource::new(sample_rate, channels as u16);
-        let local = LocalAudioTrack::create_audio_track("ue-audio", src.clone());
+        let samples_per_10ms = sample_rate / 100;
+        let src = NativeAudioSource::new(AudioSourceOptions::default(), sample_rate, channels, samples_per_10ms);
+        let local = LocalAudioTrack::create_audio_track("ue-audio", RtcAudioSource::Native(src.clone()));
         let room = g
             .room
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("not connected"))?
-            .clone();
+            .ok_or_else(|| anyhow::anyhow!("not connected"))?;
         let rt = g.rt.clone();
 
         rt.block_on(async {
@@ -216,6 +214,8 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
         let frame_10ms = ((sample_rate as usize / 100) * channels as usize).max(1);
         let src = g.audio_src.as_ref().unwrap().clone();
         let rt = g.rt.clone();
+        let ch = channels;
+        let sr = sample_rate;
 
         rt.spawn(async move {
             let mut tick = interval(Duration::from_millis(10));
@@ -241,18 +241,18 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
                 }
 
                 // Feed one 10ms frame
-                // NOTE: NativeAudioSource::capture_frame_i16 accepts interleaved i16.
-                // If your SDK expects frames-per-channel too, adjust accordingly.
-                let _ = src.capture_frame_i16(&buf);
+                let samples_per_channel = (buf.len() as u32) / ch;
+                let frame = AudioFrame {
+                    data: Cow::Borrowed(&buf[..]),
+                    sample_rate: sr,
+                    num_channels: ch,
+                    samples_per_channel,
+                };
+                let _ = src.capture_frame(&frame).await;
             }
         });
 
-        g.ring = Some(AudioRing {
-            prod,
-            sample_rate,
-            channels,
-            frame_10ms,
-        });
+        g.ring = Some(AudioRing { prod });
     }
 
     Ok(())
@@ -327,7 +327,7 @@ pub extern "C" fn lk_send_data(
     let c = unsafe { &*(client as *const Client) };
     let g = c.0.lock().unwrap();
     let room = match g.room.as_ref() {
-        Some(r) => r.clone(),
+        Some(r) => r,
         None => return err(6, "not connected"),
     };
 
@@ -339,12 +339,13 @@ pub extern "C" fn lk_send_data(
     .to_string();
 
     let rt = g.rt.clone();
-    let res = rt.block_on(async move {
-        let mut writer: ByteStreamWriter = room
+    let res = rt.block_on(async {
+        let options = StreamByteOptions { topic: topic.clone(), ..Default::default() };
+        let writer: ByteStreamWriter = room
             .local_participant()
-            .open_byte_stream(&topic, StreamByteOptions::default())
+            .stream_bytes(options)
             .await?;
-        writer.write_all(&payload).await?;
+        writer.write(&payload).await?;
         writer.close().await?;
         Ok::<(), anyhow::Error>(())
     });
