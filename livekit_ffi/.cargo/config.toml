@@ -1,0 +1,4 @@
+# Cross‑platform defaults. On Windows, we match UE's default dynamic CRT (/MD).
+# If your UE build uses static CRT (/MT), uncomment the section below.
+#[target.x86_64-pc-windows-msvc]
+#rustflags = ["-Ctarget-feature=+crt-static"]

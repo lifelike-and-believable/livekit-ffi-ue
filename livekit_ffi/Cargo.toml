@@ -1,0 +1,67 @@
+[package]
+name = "livekit_ffi"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "FFI layer between Unreal Engine and LiveKit SDK (audio + data only)"
+authors = ["Athomas Goldberg <athomas@athomasgoldberg.com>"]
+
+[lib]
+crate-type = ["staticlib"]
+
+# ───────────────────────────────────────────────
+# Features
+# ───────────────────────────────────────────────
+[features]
+# Enable full LiveKit integration
+with_livekit = [
+    "dep:livekit",
+    "dep:livekit-api",
+    "dep:livekit-protocol",
+    "dep:tokio",
+    "dep:anyhow",
+    "dep:once_cell",
+    "dep:rtrb"
+]
+
+# ───────────────────────────────────────────────
+# Dependencies
+# ───────────────────────────────────────────────
+[dependencies]
+# LiveKit stack (pinned to a working set)
+livekit          = { version = "=0.7.24", optional = true }
+livekit-api      = { version = "=0.4.9", optional = true }
+livekit-protocol = { version = "=0.5.1", optional = true }
+
+# Async runtime and utilities
+tokio       = { version = "1.39", features = ["rt-multi-thread", "macros", "time"], optional = true }
+once_cell   = { version = "1.19", optional = true }
+anyhow      = { version = "1.0", optional = true }
+
+# Lock-free ring buffer for audio frames
+rtrb = { version = "0.3", optional = true }
+
+# ───────────────────────────────────────────────
+# Build profile
+# ───────────────────────────────────────────────
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+
+# ───────────────────────────────────────────────
+# Metadata for documentation & CI
+# ───────────────────────────────────────────────
+[package.metadata]
+repository = "https://github.com/lifelike-and-believable/livekit-ffi-ue"
+readme = "../README.md"
+
+# ───────────────────────────────────────────────
+# Notes
+# ───────────────────────────────────────────────
+# - `cargo build --release`             → builds stub backend (no LiveKit)
+# - `cargo build --release --features with_livekit`
+#       → builds full implementation (requires clang/libclang on Windows)
+# - Works across Win/Mac/Linux with MSVC, clang, or gcc as backend C++ compiler.
