@@ -16,13 +16,18 @@ use tokio::{
     runtime::Runtime,
     time::{interval, Duration},
 };
+use futures::StreamExt;
 
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::RoomOptions;
 use livekit::{ByteStreamWriter, StreamByteOptions, StreamWriter};
+use livekit::RoomEvent;
+// use livekit::data_stream::ByteStreamReader; // not currently used
+use livekit::StreamReader;
 use livekit::webrtc::audio_source::{native::NativeAudioSource, AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::prelude::AudioFrame;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
 // --------- C ABI surface ---------
 
@@ -62,6 +67,15 @@ pub enum LkReliability {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub enum LkRole {
+    Auto = 0,
+    Publisher = 1,
+    Subscriber = 2,
+    Both = 3,
+}
+
+#[repr(C)]
 pub struct LkClientHandle {
     _private: [u8; 0],
 }
@@ -72,11 +86,20 @@ struct AudioRing {
     prod: Producer<i16>,
 }
 
+struct UserPtr(*mut c_void);
+unsafe impl Send for UserPtr {}
+unsafe impl Sync for UserPtr {}
+
 struct ClientState {
     room: Option<Room>,
     audio_src: Option<NativeAudioSource>,
+    // Keep the published local audio track alive to ensure publication persists
+    local_audio_track: Option<LocalAudioTrack>,
     ring: Option<AudioRing>,
     rt: Arc<Runtime>,
+    data_cb: Option<(extern "C" fn(*mut c_void, *const u8, usize), UserPtr)>,
+    audio_cb: Option<(extern "C" fn(*mut c_void, *const i16, usize, c_int, c_int), UserPtr)>,
+    role: LkRole,
 }
 
 struct Client(Arc<Mutex<ClientState>>);
@@ -100,8 +123,12 @@ pub extern "C" fn lk_client_create() -> *mut LkClientHandle {
     let state = ClientState {
         room: None,
         audio_src: None,
+        local_audio_track: None,
         ring: None,
         rt: runtime(),
+        data_cb: None,
+        audio_cb: None,
+        role: LkRole::Both,
     };
     let boxed = Box::new(Client(Arc::new(Mutex::new(state))));
     Box::into_raw(boxed) as *mut LkClientHandle
@@ -117,11 +144,27 @@ pub extern "C" fn lk_client_destroy(client: *mut LkClientHandle) {
 
 #[no_mangle]
 pub extern "C" fn lk_client_set_data_callback(
-    _client: *mut LkClientHandle,
-    _cb: Option<extern "C" fn(user: *mut c_void, bytes: *const u8, len: usize)>,
-    _user: *mut c_void,
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, bytes: *const u8, len: usize)>,
+    user: *mut c_void,
 ) -> LkResult {
-    // Add when implementing subscriber side; publisher-only for now.
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.data_cb = cb.map(|f| (f, UserPtr(user)));
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_client_set_audio_callback(
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, pcm: *const i16, frames_per_channel: usize, channels: c_int, sample_rate: c_int)>,
+    user: *mut c_void,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.audio_cb = cb.map(|f| (f, UserPtr(user)));
     ok()
 }
 
@@ -130,6 +173,17 @@ pub extern "C" fn lk_connect(
     client: *mut LkClientHandle,
     url: *const c_char,
     token: *const c_char,
+) -> LkResult {
+    // Default to Both
+    lk_connect_with_role(client, url, token, LkRole::Both)
+}
+
+#[no_mangle]
+pub extern "C" fn lk_connect_with_role(
+    client: *mut LkClientHandle,
+    url: *const c_char,
+    token: *const c_char,
+    role: LkRole,
 ) -> LkResult {
     if client.is_null() {
         return err(1, "client null");
@@ -148,19 +202,98 @@ pub extern "C" fn lk_connect(
     let mut g = c.0.lock().unwrap();
     let rt = g.rt.clone();
 
+    let role_copy = role; // copy enum (Copy)
     let res = rt.block_on(async move {
-        let (room, mut events) = Room::connect(&url, &token, RoomOptions::default()).await?;
-        // Drain events so the mpsc channel does not back up.
-        tokio::spawn(async move {
-            while let Some(_e) = events.recv().await {
-                // hook for logging if desired
-            }
-        });
-        Ok::<Room, anyhow::Error>(room)
+        let mut opts = RoomOptions::default();
+        // If explicit Publisher, disable auto_subscribe to avoid subscribing to media.
+        if matches!(role_copy, LkRole::Publisher) { opts.auto_subscribe = false; }
+        let (room, events) = Room::connect(&url, &token, opts).await?;
+        Ok::<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>), anyhow::Error>((room, events))
     });
 
     match res {
-        Ok(room) => {
+        Ok((room, mut events)) => {
+            g.role = role_copy;
+            let client_arc = c.0.clone();
+            println!(
+                "[livekit_ffi] Connected. role={:?} auto_subscribe={}", 
+                role_copy, !matches!(role_copy, LkRole::Publisher)
+            );
+            // Spawn event processor to handle incoming data/audio
+            g.rt.spawn(async move {
+                while let Some(ev) = events.recv().await {
+                    match ev {
+                        RoomEvent::ByteStreamOpened { reader, topic: _, participant_identity: _ } => {
+                            let Some(reader) = reader.take() else { continue; };
+                            // Read all bytes, then invoke callback if set
+                            let bytes_res = reader.read_all().await;
+                            if let Ok(content) = bytes_res {
+                                // Copy to Vec to ensure stable backing memory for callback
+                                let buf: Vec<u8> = content.to_vec();
+                                println!("[livekit_ffi] ByteStreamOpened: received {} bytes", buf.len());
+                                let guard_opt = client_arc.lock().ok();
+                                if let Some(guard) = guard_opt {
+                                    if let Some((cb, user)) = guard.data_cb.as_ref() {
+                                        // SAFETY: We call user-provided callback synchronously
+                                        cb(user.0, buf.as_ptr(), buf.len());
+                                    }
+                                }
+                                drop(buf);
+                            }
+                        }
+                        RoomEvent::Disconnected { reason } => {
+                            println!("[livekit_ffi] Disconnected event: reason={:?}", reason);
+                        }
+                        RoomEvent::ConnectionStateChanged(state) => {
+                            println!("[livekit_ffi] ConnectionStateChanged: {:?}", state);
+                        }
+                        RoomEvent::TrackSubscribed { track, publication, participant: _ } => {
+                            // Remote audio subscribed - set up a NativeAudioStream and forward frames to audio callback
+                            if let RemoteTrack::Audio(audio) = track {
+                                println!(
+                                    "[livekit_ffi] TrackSubscribed audio: name='{}', sid='{}'",
+                                    publication.name(), publication.sid()
+                                );
+                                // Extract underlying RTC track to build a stream reader
+                                let rtc = audio.rtc_track();
+                                let client_arc2 = client_arc.clone();
+                                // Default to 48kHz mono unless otherwise required by your pipeline
+                                let sample_rate = 48_000u32;
+                                let channels = 1u32;
+                                
+                                // Spawn a task to poll audio frames and invoke the user callback synchronously per frame
+                                tokio::spawn(async move {
+                                    let mut stream = NativeAudioStream::new(rtc, sample_rate as i32, channels as i32);
+                                    let mut logged_first = false;
+                                    while let Some(frame) = stream.next().await {
+                                        // Copy to Vec to ensure stable memory for callback
+                                        let buf: Vec<i16> = frame.data.as_ref().to_vec();
+
+                                        if let Ok(guard) = client_arc2.lock() {
+                                            if let Some((cb, user)) = guard.audio_cb.as_ref() {
+                                                let frames_per_channel = frame.samples_per_channel as usize;
+                                                let ch = frame.num_channels as c_int;
+                                                let sr = frame.sample_rate as c_int;
+                                                cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr);
+                                            }
+                                        }
+                                        // buf drops after callback returns
+
+                                        if !logged_first {
+                                            println!("[livekit_ffi] First remote audio frame: sr={}Hz, ch={}, fpc={}", frame.sample_rate, frame.num_channels, frame.samples_per_channel);
+                                            logged_first = true;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        other => {
+                            // Log other events at low verbosity to aid diagnostics
+                            println!("[livekit_ffi] Event: {:?}", other);
+                        }
+                    }
+                }
+            });
             g.room = Some(room);
             ok()
         }
@@ -182,9 +315,20 @@ pub extern "C" fn lk_disconnect(client: *mut LkClientHandle) -> LkResult {
             let _ = room.close().await; // graceful shutdown
         });
     }
+    println!("[livekit_ffi] Disconnected");
     g.audio_src = None;
     g.ring = None; // dropping prod ends the consumer loop once src drops
     ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_client_is_ready(client: *mut LkClientHandle) -> c_int {
+    if client.is_null() {
+        return 0;
+    }
+    let c = unsafe { &*(client as *const Client) };
+    let g = c.0.lock().unwrap();
+    if g.room.is_some() { 1 } else { 0 }
 }
 
 // Ensure NativeAudioSource + ring consumer exist (lazy init).
@@ -199,12 +343,22 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
             .ok_or_else(|| anyhow::anyhow!("not connected"))?;
         let rt = g.rt.clone();
 
-        rt.block_on(async {
+        let pub_res = rt.block_on(async {
             room.local_participant()
-                .publish_track(LocalTrack::Audio(local), TrackPublishOptions::default())
+                .publish_track(LocalTrack::Audio(local.clone()), TrackPublishOptions::default())
                 .await
-        })?;
-        g.audio_src = Some(src);
+        });
+        match pub_res {
+            Ok(_) => {
+                println!("[livekit_ffi] Published local audio track (sr={} ch={})", sample_rate, channels);
+                g.local_audio_track = Some(local);
+                g.audio_src = Some(src);
+            }
+            Err(e) => {
+                println!("[livekit_ffi] Failed to publish audio track: {}", e);
+                return Err(e.into());
+            }
+        }
     }
 
     if g.ring.is_none() {
@@ -286,7 +440,10 @@ pub extern "C" fn lk_publish_audio_pcm_i16(
     let sample_rate = sample_rate as u32;
 
     if let Err(e) = ensure_audio_pipeline(&mut g, sample_rate, channels) {
-        return err(7, &format!("audio pipeline: {e}"));
+        // Provide a useful error string for the caller
+        let msg = format!("audio pipeline init failed: {}", e);
+        println!("[livekit_ffi] {}", msg);
+        return err(7, &msg);
     }
 
     let total = frames_per_channel * channels as usize;
@@ -301,10 +458,15 @@ pub extern "C" fn lk_publish_audio_pcm_i16(
                     pushed += 1;
                 }
                 Err(_) => {
+                    // Ring full; drop remainder to avoid stalling
                     break;
                 }
             }
         }
+    } else {
+        let msg = "audio ring not initialized";
+        println!("[livekit_ffi] {}", msg);
+        return err(8, msg);
     }
 
     ok()
@@ -340,18 +502,43 @@ pub extern "C" fn lk_send_data(
 
     let rt = g.rt.clone();
     let res = rt.block_on(async {
-        let options = StreamByteOptions { topic: topic.clone(), ..Default::default() };
-        let writer: ByteStreamWriter = room
-            .local_participant()
-            .stream_bytes(options)
-            .await?;
-        writer.write(&payload).await?;
-        writer.close().await?;
-        Ok::<(), anyhow::Error>(())
+        // Helper to perform one send attempt
+        async fn send_once(
+            room: &Room,
+            topic: &str,
+            payload: &[u8],
+        ) -> Result<(), anyhow::Error> {
+            let options = StreamByteOptions { topic: topic.to_string(), ..Default::default() };
+            let writer: ByteStreamWriter = room
+                .local_participant()
+                .stream_bytes(options)
+                .await?;
+            writer.write(payload).await?;
+            writer.close().await?;
+            Ok(())
+        }
+
+        // First attempt
+        match send_once(room, &topic, &payload).await {
+            Ok(_) => Ok(()),
+            Err(e1) => {
+                // Brief backoff then one retry; common when engine is still settling right after join
+                println!("[livekit_ffi] send_data first attempt failed, retrying: {}", e1);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                send_once(room, &topic, &payload).await
+            }
+        }
     });
 
     match res {
-        Ok(_) => ok(),
-        Err(e) => err(9, &format!("byte_stream write failed: {e}")),
+        Ok(_) => {
+            println!("[livekit_ffi] Sent data: {} bytes, topic='{}'", len, topic);
+            ok()
+        },
+        Err(e) => {
+            let msg = format!("byte_stream write failed: {}", e);
+            println!("[livekit_ffi] {}", msg);
+            err(9, &msg)
+        },
     }
 }

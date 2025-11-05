@@ -1,0 +1,105 @@
+name: Build LiveKit FFI SDK
+
+on:
+  push:
+    paths:
+      - 'livekit_ffi/**'
+      - 'tools/**'
+      - '.github/workflows/build-ffi.yml'
+  pull_request:
+    paths:
+      - 'livekit_ffi/**'
+      - 'tools/**'
+      - '.github/workflows/build-ffi.yml'
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  windows-msvc:
+    name: Windows (MSVC) Release
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.87.0 (MSVC)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.87.0
+          profile: minimal
+          target: x86_64-pc-windows-msvc
+          override: true
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            livekit_ffi
+
+      - name: Build (Release, with_livekit)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cd livekit_ffi
+          cargo build --release --features with_livekit
+
+      - name: Package SDK (headers + libs + dll + pdb)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "tools/package.ps1" -CrateDir "livekit_ffi" -OutDir "artifacts/windows-x64"
+
+      - name: Upload artifact (SDK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: livekit-ffi-sdk-windows-x64
+          path: |
+            artifacts/windows-x64/**
+
+      - name: Package Plugin Layout (ThirdParty + Binaries)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "tools/package-plugin.ps1" -CrateDir "livekit_ffi" -OutDir "artifacts/plugin-windows-x64" -ThirdPartyName "livekit_ffi"
+
+      - name: Upload artifact (PluginLayout)
+        uses: actions/upload-artifact@v4
+        with:
+          name: livekit-ffi-plugin-windows-x64
+          path: |
+            artifacts/plugin-windows-x64/**
+
+  release-assets:
+    if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+    needs: [windows-msvc]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: livekit-ffi-sdk-windows-x64
+          path: artifacts/windows-x64
+
+      - name: Download Plugin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: livekit-ffi-plugin-windows-x64
+          path: artifacts/plugin-windows-x64
+
+      - name: Create zip
+        run: |
+          cd artifacts/windows-x64
+          zip -r ../livekit-ffi-sdk-windows-x64.zip .
+          cd ../plugin-windows-x64
+          zip -r ../livekit-ffi-plugin-windows-x64.zip .
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/livekit-ffi-sdk-windows-x64.zip
+            artifacts/livekit-ffi-plugin-windows-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

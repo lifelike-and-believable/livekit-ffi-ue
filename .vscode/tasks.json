@@ -109,6 +109,20 @@
 			],
 			"isBackground": true,
 			"group": "none"
+		},
+		{
+			"label": "Generate LiveKit Token",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/tools/gen-token.ps1"
+			],
+			"isBackground": false,
+			"group": "none"
 		}
 	]
 }
