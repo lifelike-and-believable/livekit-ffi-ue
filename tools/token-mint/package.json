@@ -1,0 +1,13 @@
+{
+  "name": "livekit-token-mint",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "CLI to mint LiveKit tokens with TTL and role grants",
+  "bin": {
+    "mint-livekit-token": "index.js"
+  },
+  "dependencies": {
+    "@livekit/server-sdk": "^2.4.0"
+  }
+}

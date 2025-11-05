@@ -28,6 +28,10 @@ public:
     UPROPERTY(EditAnywhere, Category="LiveKit|Audio") int32 SampleRate = 48000;
     UPROPERTY(EditAnywhere, Category="LiveKit|Audio") int32 Channels = 1;
 
+    // Connection behavior
+    UPROPERTY(EditAnywhere, Category="LiveKit|Connection") bool bConnectAsync = true;
+    UPROPERTY(EditAnywhere, Category="LiveKit|Connection", meta=(ClampMin="0.1", ClampMax="120.0")) float ConnectTimeoutSec = 5.0f;
+
     // Test utilities
     UPROPERTY(EditAnywhere, Category="LiveKit|Test") bool bStartDebugTone = false;
     UPROPERTY(EditAnywhere, Category="LiveKit|Test") float ToneFrequencyHz = 440.0f;
@@ -87,6 +91,7 @@ private:
     FTimerHandle DataTimerHandle;
     FTimerHandle ToneReadyHandle;
     FTimerHandle DataReadyHandle;
+    FTimerHandle ConnectTimeoutHandle;
     double TonePhase = 0.0;
     int64 DataSeq = 0;
 

@@ -8,3 +8,7 @@ public:
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;
 };
+
+// Ensures the LiveKit FFI DLL is loaded at runtime.
+// Safe to call multiple times; returns true if loaded or unnecessary.
+bool LiveKitEnsureFfiLoaded();

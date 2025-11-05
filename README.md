@@ -60,3 +60,13 @@ If you need a local media server for testing, see:
 
 docs/LOCAL_LIVEKIT_QUICKSTART.md
 
+## Token minting (dev tool)
+
+Need long‑lived dev tokens? Use the included utility:
+
+```
+pwsh ./tools/mint-token.ps1 -Identity user1 -Room demo -Ttl 168h
+```
+
+More options and examples in `docs/TOKEN_MINTING.md`.
+

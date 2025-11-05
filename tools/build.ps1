@@ -103,9 +103,20 @@ if ($UePluginDir) {
     $tpBase = Join-Path $UePluginDir "ThirdParty\livekit_ffi"
     $tpBin  = Join-Path $tpBase "bin\Win64\Release"
     $tpLib  = Join-Path $tpBase "lib\Win64\Release"
+    $tpInc  = Join-Path $tpBase "include"
 
     New-Item -ItemType Directory -Force -Path $tpBin | Out-Null
     New-Item -ItemType Directory -Force -Path $tpLib | Out-Null
+    New-Item -ItemType Directory -Force -Path $tpInc | Out-Null
+
+    # Copy headers to ThirdParty/include
+    $incSrc = Join-Path $CrateDir "include\*.h"
+    if (Get-ChildItem -ErrorAction SilentlyContinue $incSrc) {
+      Copy-Item $incSrc -Destination $tpInc -Force
+      Info "[copy] Copied headers to $tpInc"
+    } else {
+      Warn "[copy] No headers found at $($CrateDir)\include"
+    }
 
     # Copy runtime DLL + PDB to ThirdParty/bin
     $dllSrc = Join-Path $targetDir "livekit_ffi.dll"
@@ -121,13 +132,30 @@ if ($UePluginDir) {
       Info "[copy] Copied PDB to $tpBin"
     }
 
-    # Copy import/static libs to ThirdParty/lib
+    # Copy import lib to ThirdParty/lib
     $importLib = Join-Path $targetDir "livekit_ffi.dll.lib"
     if (Test-Path $importLib) {
       Copy-Item $importLib -Destination (Join-Path $tpLib "livekit_ffi.dll.lib") -Force
       Info "[copy] Copied import lib to $tpLib"
     } else {
       Warn "[copy] Import lib not found at $importLib"
+    }
+
+    # Also mirror to Sandbox plugin ThirdParty if present
+    $SandboxPluginDir = Join-Path $RepoRoot "ue\LiveKitSandbox\Plugins\LiveKitBridge"
+    if (Test-Path $SandboxPluginDir) {
+      $tpBase2 = Join-Path $SandboxPluginDir "ThirdParty\livekit_ffi"
+      $tpBin2  = Join-Path $tpBase2 "bin\Win64\Release"
+      $tpLib2  = Join-Path $tpBase2 "lib\Win64\Release"
+      $tpInc2  = Join-Path $tpBase2 "include"
+      New-Item -ItemType Directory -Force -Path $tpBin2 | Out-Null
+      New-Item -ItemType Directory -Force -Path $tpLib2 | Out-Null
+      New-Item -ItemType Directory -Force -Path $tpInc2 | Out-Null
+      if (Get-ChildItem -ErrorAction SilentlyContinue $incSrc) { Copy-Item $incSrc -Destination $tpInc2 -Force }
+      if (Test-Path $dllSrc) { Copy-Item $dllSrc -Destination (Join-Path $tpBin2 "livekit_ffi.dll") -Force }
+      if (Test-Path $pdbSrc) { Copy-Item $pdbSrc -Destination (Join-Path $tpBin2 "livekit_ffi.pdb") -Force }
+      if (Test-Path $importLib) { Copy-Item $importLib -Destination (Join-Path $tpLib2 "livekit_ffi.dll.lib") -Force }
+      Info "[copy] Mirrored ThirdParty to sandbox plugin at $tpBase2"
     }
 
     # Do not copy static .lib for UE; keep plugin ThirdParty lean and DLL-based

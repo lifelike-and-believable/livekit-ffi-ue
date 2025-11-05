@@ -3,11 +3,19 @@
 #include <cstddef>
 #include "CoreMinimal.h"
 #include "livekit_ffi.h"
+#include "LiveKitBridgeModule.h"
 
 class LiveKitClient
 {
 public:
-    LiveKitClient() : Handle(lk_client_create()) {}
+    LiveKitClient()
+    {
+        if (!LiveKitEnsureFfiLoaded())
+        {
+            UE_LOG(LogTemp, Error, TEXT("LiveKit FFI DLL not loaded; FFI calls may fail"));
+        }
+        Handle = lk_client_create();
+    }
     ~LiveKitClient() { if (Handle) lk_client_destroy(Handle); }
 
     bool Connect(const char* Url, const char* Token)

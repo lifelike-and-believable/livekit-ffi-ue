@@ -10,7 +10,9 @@ public class LiveKitBridge : ModuleRules
 
         string ThirdPartyBase = Path.Combine(PluginDirectory, "ThirdParty", "livekit_ffi");
         string IncludePath = Path.Combine(ThirdPartyBase, "include");
+        // Ensure third-party C headers are on the system include path
         PublicIncludePaths.Add(IncludePath);
+        PublicSystemIncludePaths.Add(IncludePath);
 
         if (Target.Platform == UnrealTargetPlatform.Win64)
         {
