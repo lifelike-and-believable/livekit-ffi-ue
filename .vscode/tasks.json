@@ -111,15 +111,15 @@
 			"group": "none"
 		},
 		{
-			"label": "Generate LiveKit Token",
+			"label": "Generate Single Token",
 			"type": "shell",
 			"command": "pwsh",
 			"args": [
 				"-NoProfile",
 				"-ExecutionPolicy",
 				"Bypass",
-				"-File",
-				"${workspaceFolder}/tools/gen-token.ps1"
+				"-Command",
+				"& { $role='${input:TOKEN_ROLE}'; $cmd='${workspaceFolder}/tools/mint-token.ps1'; $params=@('-Identity','${input:TOKEN_IDENTITY}','-Room','${input:TOKEN_ROOM}','-Ttl','${input:TOKEN_TTL}'); if ($role -eq 'subscriber') { $params += @('-NoPublish','-NoPublishData') }; & pwsh -NoProfile -ExecutionPolicy Bypass -File $cmd @params }"
 			],
 			"isBackground": false,
 			"group": "none"
@@ -143,5 +143,40 @@
 			"group": "build"
 		}
 	],
-	"inputs": []
+	"inputs": [
+		{
+			"id": "TOKEN_IDENTITY",
+			"type": "promptString",
+			"description": "Identity (e.g., ue_publisher1)",
+			"default": "user1"
+		},
+		{
+			"id": "TOKEN_ROOM",
+			"type": "promptString",
+			"description": "Room name",
+			"default": "test"
+		},
+		{
+			"id": "TOKEN_TTL",
+			"type": "promptString",
+			"description": "TTL (e.g., 168h, 60m, 3600s)",
+			"default": "168h"
+		},
+		{
+			"id": "TOKEN_ROLE",
+			"type": "pickString",
+			"description": "Select role",
+			"options": [
+				{
+					"label": "publisher",
+					"value": "publisher"
+				},
+				{
+					"label": "subscriber",
+					"value": "subscriber"
+				}
+			],
+			"default": "publisher"
+		}
+	]
 }
