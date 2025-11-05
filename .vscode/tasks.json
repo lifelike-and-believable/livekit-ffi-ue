@@ -123,6 +123,25 @@
 			],
 			"isBackground": false,
 			"group": "none"
+		},
+		{
+			"label": "Generate Test Tokens (168h)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/tools/generate-test-tokens.ps1",
+				"-Room",
+				"test",
+				"-Ttl",
+				"168h"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
-	]
+	],
+	"inputs": []
 }
