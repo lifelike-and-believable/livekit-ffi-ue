@@ -122,9 +122,27 @@ public:
         return ok;
     }
 
+    bool SetConnectionCallback(LkConnectionCallback Cb, void* User)
+    {
+        LkResult r = lk_set_connection_callback(Handle, Cb, User);
+        const bool ok = (r.code == 0);
+        if (!ok) { CaptureError(r); if (r.message) { UE_LOG(LogTemp, Warning, TEXT("LiveKit set connection callback: %s"), UTF8_TO_TCHAR(r.message)); lk_free_str((char*)r.message); } }
+        else if (r.message) { lk_free_str((char*)r.message); ClearError(); }
+        return ok;
+    }
+
     bool IsReady() const
     {
         return Handle && lk_client_is_ready(Handle) != 0;
+    }
+
+    bool ConnectAsyncWithRole(const char* Url, const char* Token, LkRole Role)
+    {
+        LkResult r = lk_connect_with_role_async(Handle, Url, Token, Role);
+        const bool ok = (r.code == 0);
+        if (!ok) { CaptureError(r); if (r.message) { UE_LOG(LogTemp, Error, TEXT("LiveKit connect async: %s"), UTF8_TO_TCHAR(r.message)); lk_free_str((char*)r.message); } }
+        else if (r.message) { lk_free_str((char*)r.message); ClearError(); }
+        return ok;
     }
 
     int GetLastErrorCode() const { return LastCode; }

@@ -29,49 +29,17 @@ void ULiveKitPublisherComponent::BeginPlay()
     {
         Client->SetAudioCallback(&ULiveKitPublisherComponent::AudioThunk, this);
     }
+    // Always bind connection state callback for async lifecycle
+    Client->SetConnectionCallback(&ULiveKitPublisherComponent::ConnectionThunk, this);
 
     if (bConnectAsync)
     {
-        const FString UrlCopy = RoomUrl;
-        const FString TokenCopy = Token;
-        Async(EAsyncExecution::ThreadPool, [this, UrlCopy, TokenCopy, LkRoleVal]()
+        const bool scheduled = Client->ConnectAsyncWithRole(TCHAR_TO_UTF8(*RoomUrl), TCHAR_TO_UTF8(*Token), LkRoleVal);
+        if (!scheduled)
         {
-            const bool bOk = Client && Client->ConnectWithRole(TCHAR_TO_UTF8(*UrlCopy), TCHAR_TO_UTF8(*TokenCopy), LkRoleVal);
-            if (!bOk)
-            {
-                const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
-                AsyncTask(ENamedThreads::GameThread, [this, Reason]()
-                {
-                    if (!IsValid(this)) return;
-                    if (!Reason.IsEmpty())
-                    {
-                        UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed: %s"), *Reason);
-                    }
-                    else
-                    {
-                        UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed"));
-                    }
-                });
-            }
-            else
-            {
-                AsyncTask(ENamedThreads::GameThread, [this]()
-                {
-                    if (!IsValid(this)) return;
-                    const TCHAR* RoleStr = TEXT("Both");
-                    switch (Role)
-                    {
-                        case ELiveKitClientRole::Publisher: RoleStr = TEXT("Publisher"); break;
-                        case ELiveKitClientRole::Subscriber: RoleStr = TEXT("Subscriber"); break;
-                        case ELiveKitClientRole::Auto: RoleStr = TEXT("Auto"); break;
-                        case ELiveKitClientRole::Both: default: RoleStr = TEXT("Both"); break;
-                    }
-                    UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit connected to %s (Role=%s, Recv: mocap=%s audio=%s)"), *RoomUrl, RoleStr, bReceiveMocap?TEXT("on"):TEXT("off"), bReceiveAudio?TEXT("on"):TEXT("off"));
-                    OnConnected(RoomUrl, Role, bReceiveMocap, bReceiveAudio);
-                });
-            }
-        });
-
+            const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
+            UE_LOG(LogLiveKitBridge, Error, TEXT("Failed to schedule async connect: %s"), Reason.IsEmpty()?TEXT("unknown"):*Reason);
+        }
         // Optional timeout supervision (does not cancel connect, only logs/pulses feedback)
         if (GetWorld() && ConnectTimeoutSec > 0.f)
         {
@@ -353,4 +321,45 @@ void ULiveKitPublisherComponent::StopTestData()
         GetWorld()->GetTimerManager().ClearTimer(DataTimerHandle);
         UE_LOG(LogLiveKitBridge, Log, TEXT("Stopped test data"));
     }
+}
+
+/* static */ void ULiveKitPublisherComponent::ConnectionThunk(void* User, LkConnectionState state, int32_t reason_code, const char* message)
+{
+    ULiveKitPublisherComponent* Self = reinterpret_cast<ULiveKitPublisherComponent*>(User);
+    if (!Self || !IsValid(Self)) return;
+    const FString Msg = message ? FString(UTF8_TO_TCHAR(message)) : FString();
+    AsyncTask(ENamedThreads::GameThread, [Self, state, reason_code, Msg]()
+    {
+        if (!IsValid(Self)) return;
+        switch (state)
+        {
+            case LkConnConnecting:
+                UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit: connecting..."));
+                break;
+            case LkConnConnected:
+            {
+                const TCHAR* RoleStr = TEXT("Both");
+                switch (Self->Role)
+                {
+                    case ELiveKitClientRole::Publisher: RoleStr = TEXT("Publisher"); break;
+                    case ELiveKitClientRole::Subscriber: RoleStr = TEXT("Subscriber"); break;
+                    case ELiveKitClientRole::Auto: RoleStr = TEXT("Auto"); break;
+                    case ELiveKitClientRole::Both: default: RoleStr = TEXT("Both"); break;
+                }
+                UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit connected to %s (Role=%s, Recv: mocap=%s audio=%s)"), *Self->RoomUrl, RoleStr, Self->bReceiveMocap?TEXT("on"):TEXT("off"), Self->bReceiveAudio?TEXT("on"):TEXT("off"));
+                Self->OnConnected(Self->RoomUrl, Self->Role, Self->bReceiveMocap, Self->bReceiveAudio);
+                break;
+            }
+            case LkConnReconnecting:
+                UE_LOG(LogLiveKitBridge, Warning, TEXT("LiveKit: reconnecting..."));
+                break;
+            case LkConnDisconnected:
+                UE_LOG(LogLiveKitBridge, Warning, TEXT("LiveKit: disconnected (%d) %s"), reason_code, *Msg);
+                Self->OnDisconnected();
+                break;
+            case LkConnFailed:
+                UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit: connection failed (%d) %s"), reason_code, *Msg);
+                break;
+        }
+    });
 }

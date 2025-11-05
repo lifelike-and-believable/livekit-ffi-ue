@@ -85,6 +85,7 @@ private:
     // C callback thunks
     static void DataThunk(void* User, const uint8_t* bytes, size_t len);
     static void AudioThunk(void* User, const int16_t* pcm, size_t frames_per_channel, int32_t channels, int32_t sample_rate);
+    static void ConnectionThunk(void* User, LkConnectionState state, int32_t reason_code, const char* message);
 
     // Test state
     FTimerHandle ToneTimerHandle;

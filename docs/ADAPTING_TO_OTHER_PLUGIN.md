@@ -25,25 +25,28 @@ lib/Win64/Release/      # livekit_ffi.dll.lib + livekit_ffi.lib
 
 ## 2) Place files into your plugin
 
-In your other plugin, create a ThirdParty layout under your module directory for straightforward paths:
+Recommended (plugin‑root ThirdParty for portability):
 
 ```
 YourPlugin/
+  YourPlugin.uplugin
+  ThirdParty/
+    livekit_ffi/
+      include/                # copy SDK include/*
+      lib/Win64/Release/      # copy SDK lib/Win64/Release/livekit_ffi.dll.lib
+      bin/Win64/Release/      # copy SDK bin/{livekit_ffi.dll, livekit_ffi.pdb}
   Source/
     YourPlugin/
       YourPlugin.Build.cs
-      ThirdParty/
-        livekit_ffi/
-          include/                # copy SDK include/*
-          lib/Win64/Release/      # copy SDK lib/Win64/Release/livekit_ffi.dll.lib
-          bin/Win64/Release/      # copy SDK bin/{livekit_ffi.dll, livekit_ffi.pdb}
 ```
+
+Alternative (module‑local): keep `ThirdParty/livekit_ffi` beneath your module directory and use `ModuleDirectory` in Build.cs. The rest of the guidance is identical.
 
 Notes:
 - Keep the folder names as shown for predictable paths in the Build.cs example below.
 - The DLL will be staged from `ThirdParty/.../bin/Win64/Release` at build time; no need to place it in `Binaries/Win64` manually.
 
-Shortcut: If you grabbed the `livekit-ffi-plugin-windows-x64` CI artifact, drop its `ThirdParty/livekit_ffi` folder under your module directory (`Source/YourPlugin/ThirdParty/`). The plugin artifact intentionally omits the static `livekit_ffi.lib`.
+Shortcut: If you grabbed the `livekit-ffi-plugin-windows-x64` CI artifact, drop its `ThirdParty/livekit_ffi` at the plugin root. The plugin artifact intentionally omits the static `livekit_ffi.lib` (SDK zips still include it).
 
 ## 3) Configure YourPlugin.Build.cs
 
@@ -55,33 +58,31 @@ using System.IO;
 
 public class YourPlugin : ModuleRules
 {
-    public YourPlugin(ReadOnlyTargetRules Target) : base(Target)
+  public YourPlugin(ReadOnlyTargetRules Target) : base(Target)
+  {
+    PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+    PublicDependencyModuleNames.AddRange(new string[]
     {
-        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+      "Core", "CoreUObject", "Engine", "Projects"
+    });
 
-        PublicDependencyModuleNames.AddRange(new string[]
-        {
-            "Core", "CoreUObject", "Engine"
-        });
+    // Plugin-root ThirdParty
+    string ThirdPartyBase = Path.Combine(PluginDirectory, "ThirdParty", "livekit_ffi");
+    string IncludePath = Path.Combine(ThirdPartyBase, "include");
+    PublicIncludePaths.Add(IncludePath);
+    PublicSystemIncludePaths.Add(IncludePath);
 
-        // LiveKit FFI ThirdParty layout placed under this module's directory
-        string ThirdPartyDir = Path.Combine(ModuleDirectory, "ThirdParty", "livekit_ffi");
-        string IncludeDir = Path.Combine(ThirdPartyDir, "include");
-        PublicIncludePaths.Add(IncludeDir);
+    if (Target.Platform == UnrealTargetPlatform.Win64)
+    {
+      string LibPath = Path.Combine(ThirdPartyBase, "lib", "Win64", "Release");
+      string BinPath = Path.Combine(ThirdPartyBase, "bin", "Win64", "Release");
 
-        if (Target.Platform == UnrealTargetPlatform.Win64)
-        {
-            string LibDir = Path.Combine(ThirdPartyDir, "lib", "Win64", "Release");
-            PublicAdditionalLibraries.Add(Path.Combine(LibDir, "livekit_ffi.dll.lib"));
-
-            // Delay-load so the editor starts without immediately resolving the DLL
-            PublicDelayLoadDLLs.Add("livekit_ffi.dll");
-
-          // Stage the DLL from ThirdParty/bin for runtime (editor and packaged builds)
-          string BinDll = Path.Combine(ThirdPartyDir, "bin", "Win64", "Release", "livekit_ffi.dll");
-          RuntimeDependencies.Add(BinDll);
-        }
+      PublicAdditionalLibraries.Add(Path.Combine(LibPath, "livekit_ffi.dll.lib"));
+      PublicDelayLoadDLLs.Add("livekit_ffi.dll");
+      RuntimeDependencies.Add(Path.Combine(BinPath, "livekit_ffi.dll"));
     }
+  }
 }
 ```
 
@@ -92,7 +93,7 @@ Include the header and call the C API directly if you are not using our ready-ma
 ```cpp
 #include "livekit_ffi.h"
 
-// Example: create client and connect
+// Example: create client and connect (blocking)
 LkClientHandle* H = lk_client_create();
 LkResult R = lk_connect_with_role(H, "ws://localhost:7880", YourJwtToken, LkRolePublisher);
 if (R.code != 0) { /* handle error & free R.message via lk_free_str */ }
@@ -109,6 +110,19 @@ lk_publish_audio_pcm_i16(H, interleaved, framesPerChannel, channels, sampleRate)
 
 // Disconnect
 lk_disconnect(H);
+```
+
+Async connection with callbacks:
+
+```c
+void on_conn(void* user, LkConnectionState st, int32_t code, const char* msg) {
+  // handle connecting/connected/failed/disconnected on your thread of choice
+}
+
+LkClientHandle* H = lk_client_create();
+lk_set_connection_callback(H, on_conn, user);
+LkResult R = lk_connect_with_role_async(H, "ws://localhost:7880", YourJwtToken, LkRolePublisher);
+// returns immediately; watch on_conn for state changes
 ```
 
 See `livekit_ffi/include/livekit_ffi.h` for function signatures.
