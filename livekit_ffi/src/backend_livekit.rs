@@ -5,9 +5,10 @@
 
 use std::ffi::{CStr, CString};
 use std::borrow::Cow;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void, c_float};
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
 use anyhow::Result;
 use once_cell::sync::OnceCell;
@@ -51,12 +52,13 @@ fn err(code: i32, msg: &str) -> LkResult {
     }
 }
 
+/// # Safety
+/// The caller must ensure that `p` is either NULL or a valid pointer
+/// previously allocated by this FFI layer via CString::into_raw.
 #[no_mangle]
-pub extern "C" fn lk_free_str(p: *mut c_char) {
+pub unsafe extern "C" fn lk_free_str(p: *mut c_char) {
     if !p.is_null() {
-        unsafe {
-            let _ = CString::from_raw(p);
-        }
+        let _ = CString::from_raw(p);
     }
 }
 
@@ -76,6 +78,44 @@ pub enum LkRole {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub enum LkConnectionState {
+    Connecting = 0,
+    Connected = 1,
+    Reconnecting = 2,
+    Disconnected = 3,
+    Failed = 4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub enum LkLogLevel {
+    Error = 0,
+    Warn = 1,
+    Info = 2,
+    Debug = 3,
+    Trace = 4,
+}
+
+#[repr(C)]
+pub struct LkAudioStats {
+    pub sample_rate: c_int,
+    pub channels: c_int,
+    pub ring_capacity_frames: c_int,
+    pub ring_queued_frames: c_int,
+    pub underruns: c_int,
+    pub overruns: c_int,
+}
+
+#[repr(C)]
+pub struct LkDataStats {
+    pub reliable_sent_bytes: i64,
+    pub reliable_dropped: i64,
+    pub lossy_sent_bytes: i64,
+    pub lossy_dropped: i64,
+}
+
+#[repr(C)]
 pub struct LkClientHandle {
     _private: [u8; 0],
 }
@@ -84,11 +124,79 @@ pub struct LkClientHandle {
 
 struct AudioRing {
     prod: Producer<i16>,
+    capacity_frames: usize,
+    underruns: Arc<AtomicI32>,
+    overruns: Arc<AtomicI32>,
 }
 
 struct UserPtr(*mut c_void);
 unsafe impl Send for UserPtr {}
 unsafe impl Sync for UserPtr {}
+
+#[derive(Clone)]
+struct AudioPublishOptions {
+    bitrate_bps: i32,
+    enable_dtx: bool,
+    stereo: bool,
+}
+
+impl Default for AudioPublishOptions {
+    fn default() -> Self {
+        Self {
+            bitrate_bps: 32_000,
+            enable_dtx: false,
+            stereo: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AudioOutputFormat {
+    sample_rate: i32,
+    channels: i32,
+}
+
+impl Default for AudioOutputFormat {
+    fn default() -> Self {
+        Self {
+            sample_rate: 48_000,
+            channels: 1,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DataLabels {
+    reliable: String,
+    lossy: String,
+}
+
+impl Default for DataLabels {
+    fn default() -> Self {
+        Self {
+            reliable: "mocap-bin-reliable".to_string(),
+            lossy: "mocap-bin-lossy".to_string(),
+        }
+    }
+}
+
+struct DataStatsCounters {
+    reliable_sent_bytes: AtomicI64,
+    reliable_dropped: AtomicI64,
+    lossy_sent_bytes: AtomicI64,
+    lossy_dropped: AtomicI64,
+}
+
+impl Default for DataStatsCounters {
+    fn default() -> Self {
+        Self {
+            reliable_sent_bytes: AtomicI64::new(0),
+            reliable_dropped: AtomicI64::new(0),
+            lossy_sent_bytes: AtomicI64::new(0),
+            lossy_dropped: AtomicI64::new(0),
+        }
+    }
+}
 
 struct ClientState {
     room: Option<Room>,
@@ -97,9 +205,27 @@ struct ClientState {
     local_audio_track: Option<LocalAudioTrack>,
     ring: Option<AudioRing>,
     rt: Arc<Runtime>,
+    
+    // Callbacks
     data_cb: Option<(extern "C" fn(*mut c_void, *const u8, usize), UserPtr)>,
+    data_cb_ex: Option<(extern "C" fn(*mut c_void, *const c_char, LkReliability, *const u8, usize), UserPtr)>,
     audio_cb: Option<(extern "C" fn(*mut c_void, *const i16, usize, c_int, c_int), UserPtr)>,
+    audio_format_change_cb: Option<(extern "C" fn(*mut c_void, c_int, c_int), UserPtr)>,
+    connection_cb: Option<(extern "C" fn(*mut c_void, LkConnectionState, c_int, *const c_char), UserPtr)>,
+    
+    // Configuration
     role: LkRole,
+    audio_publish_opts: AudioPublishOptions,
+    audio_output_format: AudioOutputFormat,
+    data_labels: DataLabels,
+    log_level: LkLogLevel,
+    
+    // Statistics
+    data_stats: Arc<DataStatsCounters>,
+    
+    // Current audio ring info for stats
+    current_sample_rate: i32,
+    current_channels: i32,
 }
 
 struct Client(Arc<Mutex<ClientState>>);
@@ -127,8 +253,18 @@ pub extern "C" fn lk_client_create() -> *mut LkClientHandle {
         ring: None,
         rt: runtime(),
         data_cb: None,
+        data_cb_ex: None,
         audio_cb: None,
+        audio_format_change_cb: None,
+        connection_cb: None,
         role: LkRole::Both,
+        audio_publish_opts: AudioPublishOptions::default(),
+        audio_output_format: AudioOutputFormat::default(),
+        data_labels: DataLabels::default(),
+        log_level: LkLogLevel::Info,
+        data_stats: Arc::new(DataStatsCounters::default()),
+        current_sample_rate: 0,
+        current_channels: 0,
     };
     let boxed = Box::new(Client(Arc::new(Mutex::new(state))));
     Box::into_raw(boxed) as *mut LkClientHandle
@@ -167,6 +303,169 @@ pub extern "C" fn lk_client_set_audio_callback(
     g.audio_cb = cb.map(|f| (f, UserPtr(user)));
     ok()
 }
+
+#[no_mangle]
+pub extern "C" fn lk_client_set_data_callback_ex(
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, label: *const c_char, reliability: LkReliability, bytes: *const u8, len: usize)>,
+    user: *mut c_void,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.data_cb_ex = cb.map(|f| (f, UserPtr(user)));
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_audio_format_change_callback(
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, sample_rate: c_int, channels: c_int)>,
+    user: *mut c_void,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.audio_format_change_cb = cb.map(|f| (f, UserPtr(user)));
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_connection_callback(
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, state: LkConnectionState, reason_code: c_int, message: *const c_char)>,
+    user: *mut c_void,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.connection_cb = cb.map(|f| (f, UserPtr(user)));
+    ok()
+}
+
+// --------- Configuration Functions ---------
+
+#[no_mangle]
+pub extern "C" fn lk_set_audio_publish_options(
+    client: *mut LkClientHandle,
+    bitrate_bps: c_int,
+    enable_dtx: c_int,
+    stereo: c_int,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.audio_publish_opts = AudioPublishOptions {
+        bitrate_bps,
+        enable_dtx: enable_dtx != 0,
+        stereo: stereo != 0,
+    };
+    println!(
+        "[livekit_ffi] Audio publish options set: bitrate={}bps, dtx={}, stereo={}",
+        bitrate_bps, enable_dtx != 0, stereo != 0
+    );
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_audio_output_format(
+    client: *mut LkClientHandle,
+    sample_rate: c_int,
+    channels: c_int,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    if sample_rate <= 0 || channels <= 0 {
+        return err(5, "invalid audio output format");
+    }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.audio_output_format = AudioOutputFormat {
+        sample_rate,
+        channels,
+    };
+    println!(
+        "[livekit_ffi] Audio output format set: sr={}Hz, ch={}",
+        sample_rate, channels
+    );
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_default_data_labels(
+    client: *mut LkClientHandle,
+    reliable_label: *const c_char,
+    lossy_label: *const c_char,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    
+    if !reliable_label.is_null() {
+        if let Ok(s) = unsafe { cstr(reliable_label) } {
+            g.data_labels.reliable = s.to_string();
+        }
+    }
+    if !lossy_label.is_null() {
+        if let Ok(s) = unsafe { cstr(lossy_label) } {
+            g.data_labels.lossy = s.to_string();
+        }
+    }
+    
+    println!(
+        "[livekit_ffi] Data labels set: reliable='{}', lossy='{}'",
+        g.data_labels.reliable, g.data_labels.lossy
+    );
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_reconnect_backoff(
+    _client: *mut LkClientHandle,
+    _initial_ms: c_int,
+    _max_ms: c_int,
+    _multiplier: c_float,
+) -> LkResult {
+    // Note: LiveKit SDK manages reconnection internally; this is a placeholder
+    // for future implementation if SDK exposes these controls
+    println!("[livekit_ffi] Reconnect backoff configuration requested (not yet implemented)");
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_refresh_token(
+    _client: *mut LkClientHandle,
+    _token: *const c_char,
+) -> LkResult {
+    // Note: Token refresh at runtime is not currently supported by LiveKit SDK
+    // Best practice is to disconnect and reconnect with new token
+    err(501, "Token refresh not supported; use disconnect + reconnect")
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_role(
+    _client: *mut LkClientHandle,
+    _role: LkRole,
+    _auto_subscribe: c_int,
+) -> LkResult {
+    // Note: Dynamic role switching without reconnect is not currently supported
+    // Best practice is to disconnect and reconnect with new role
+    err(501, "Dynamic role switching not supported; use disconnect + reconnect with new role")
+}
+
+#[no_mangle]
+pub extern "C" fn lk_set_log_level(
+    client: *mut LkClientHandle,
+    level: LkLogLevel,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.log_level = level;
+    println!("[livekit_ffi] Log level set to: {:?}", level);
+    ok()
+}
+
+// --------- Connection Functions ---------
 
 #[no_mangle]
 pub extern "C" fn lk_connect(
@@ -219,6 +518,12 @@ pub extern "C" fn lk_connect_with_role(
                 "[livekit_ffi] Connected. role={:?} auto_subscribe={}", 
                 role_copy, !matches!(role_copy, LkRole::Publisher)
             );
+            
+            // Notify connection established
+            if let Some((cb, user)) = g.connection_cb.as_ref() {
+                cb(user.0, LkConnectionState::Connected, 0, ptr::null());
+            }
+            
             // Spawn event processor to handle incoming data/audio
             g.rt.spawn(async move {
                 while let Some(ev) = events.recv().await {
@@ -243,9 +548,27 @@ pub extern "C" fn lk_connect_with_role(
                         }
                         RoomEvent::Disconnected { reason } => {
                             println!("[livekit_ffi] Disconnected event: reason={:?}", reason);
+                            let guard_opt = client_arc.lock().ok();
+                            if let Some(guard) = guard_opt {
+                                if let Some((cb, user)) = guard.connection_cb.as_ref() {
+                                    let msg = CString::new(format!("{:?}", reason)).unwrap_or_default();
+                                    cb(user.0, LkConnectionState::Disconnected, 0, msg.as_ptr());
+                                }
+                            }
                         }
                         RoomEvent::ConnectionStateChanged(state) => {
                             println!("[livekit_ffi] ConnectionStateChanged: {:?}", state);
+                            let guard_opt = client_arc.lock().ok();
+                            if let Some(guard) = guard_opt {
+                                if let Some((cb, user)) = guard.connection_cb.as_ref() {
+                                    let lk_state = match state {
+                                        livekit::ConnectionState::Disconnected => LkConnectionState::Disconnected,
+                                        livekit::ConnectionState::Connected => LkConnectionState::Connected,
+                                        livekit::ConnectionState::Reconnecting => LkConnectionState::Reconnecting,
+                                    };
+                                    cb(user.0, lk_state, 0, ptr::null());
+                                }
+                            }
                         }
                         RoomEvent::TrackSubscribed { track, publication, participant: _ } => {
                             // Remote audio subscribed - set up a NativeAudioStream and forward frames to audio callback
@@ -257,9 +580,16 @@ pub extern "C" fn lk_connect_with_role(
                                 // Extract underlying RTC track to build a stream reader
                                 let rtc = audio.rtc_track();
                                 let client_arc2 = client_arc.clone();
-                                // Default to 48kHz mono unless otherwise required by your pipeline
-                                let sample_rate = 48_000u32;
-                                let channels = 1u32;
+                                
+                                // Use configured audio output format
+                                let (sample_rate, channels) = {
+                                    let guard_opt = client_arc.lock().ok();
+                                    if let Some(guard) = guard_opt {
+                                        (guard.audio_output_format.sample_rate as u32, guard.audio_output_format.channels as u32)
+                                    } else {
+                                        (48_000u32, 1u32)
+                                    }
+                                };
                                 
                                 // Spawn a task to poll audio frames and invoke the user callback synchronously per frame
                                 tokio::spawn(async move {
@@ -370,6 +700,10 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
         let rt = g.rt.clone();
         let ch = channels;
         let sr = sample_rate;
+        
+        let underruns = Arc::new(AtomicI32::new(0));
+        let overruns = Arc::new(AtomicI32::new(0));
+        let underruns_clone = underruns.clone();
 
         rt.spawn(async move {
             let mut tick = interval(Duration::from_millis(10));
@@ -389,6 +723,7 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
                 }
                 if got < buf.len() {
                     // Zero-pad underrun
+                    underruns_clone.fetch_add(1, Ordering::Relaxed);
                     for x in &mut buf[got..] {
                         *x = 0;
                     }
@@ -406,7 +741,9 @@ fn ensure_audio_pipeline(g: &mut ClientState, sample_rate: u32, channels: u32) -
             }
         });
 
-        g.ring = Some(AudioRing { prod });
+        g.ring = Some(AudioRing { prod, capacity_frames: capacity / channels as usize, underruns, overruns });
+        g.current_sample_rate = sample_rate as i32;
+        g.current_channels = channels as i32;
     }
 
     Ok(())
@@ -452,6 +789,7 @@ pub extern "C" fn lk_publish_audio_pcm_i16(
     // Non-blocking push; on overflow, drop tail (prefer fresh audio over stall).
     if let Some(r) = &mut g.ring {
         let mut pushed = 0usize;
+        let mut dropped = false;
         while pushed < slice.len() {
             match r.prod.push(slice[pushed]) {
                 Ok(_) => {
@@ -459,9 +797,13 @@ pub extern "C" fn lk_publish_audio_pcm_i16(
                 }
                 Err(_) => {
                     // Ring full; drop remainder to avoid stalling
+                    dropped = true;
                     break;
                 }
             }
+        }
+        if dropped {
+            r.overruns.fetch_add(1, Ordering::Relaxed);
         }
     } else {
         let msg = "audio ring not initialized";
@@ -479,11 +821,40 @@ pub extern "C" fn lk_send_data(
     len: usize,
     reliability: LkReliability,
 ) -> LkResult {
+    // Delegate to lk_send_data_ex with default parameters
+    lk_send_data_ex(client, bytes, len, reliability, 1, ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn lk_send_data_ex(
+    client: *mut LkClientHandle,
+    bytes: *const u8,
+    len: usize,
+    reliability: LkReliability,
+    _ordered: c_int,
+    label: *const c_char,
+) -> LkResult {
     if client.is_null() {
         return err(1, "client null");
     }
     if bytes.is_null() {
         return err(4, "bytes null");
+    }
+    
+    // Enforce size limits
+    const LOSSY_MAX: usize = 1300;
+    const RELIABLE_MAX: usize = 15 * 1024;
+    match reliability {
+        LkReliability::Lossy => {
+            if len > LOSSY_MAX {
+                return err(201, &format!("lossy data size {} exceeds limit {}", len, LOSSY_MAX));
+            }
+        }
+        LkReliability::Reliable => {
+            if len > RELIABLE_MAX {
+                return err(202, &format!("reliable data size {} exceeds limit {}", len, RELIABLE_MAX));
+            }
+        }
     }
 
     let c = unsafe { &*(client as *const Client) };
@@ -494,13 +865,20 @@ pub extern "C" fn lk_send_data(
     };
 
     let payload = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
-    let topic = match reliability {
-        LkReliability::Reliable => "mocap-bin-reliable",
-        LkReliability::Lossy => "mocap-bin-lossy",
-    }
-    .to_string();
+    
+    // Determine topic from label or defaults
+    let topic = if !label.is_null() {
+        unsafe { cstr(label) }.unwrap_or("custom").to_string()
+    } else {
+        match reliability {
+            LkReliability::Reliable => g.data_labels.reliable.clone(),
+            LkReliability::Lossy => g.data_labels.lossy.clone(),
+        }
+    };
 
     let rt = g.rt.clone();
+    let stats = g.data_stats.clone();
+    
     let res = rt.block_on(async {
         // Helper to perform one send attempt
         async fn send_once(
@@ -532,13 +910,101 @@ pub extern "C" fn lk_send_data(
 
     match res {
         Ok(_) => {
+            // Update statistics
+            match reliability {
+                LkReliability::Reliable => {
+                    stats.reliable_sent_bytes.fetch_add(len as i64, Ordering::Relaxed);
+                }
+                LkReliability::Lossy => {
+                    stats.lossy_sent_bytes.fetch_add(len as i64, Ordering::Relaxed);
+                }
+            }
             println!("[livekit_ffi] Sent data: {} bytes, topic='{}'", len, topic);
             ok()
         },
         Err(e) => {
+            // Update drop statistics
+            match reliability {
+                LkReliability::Reliable => {
+                    stats.reliable_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                LkReliability::Lossy => {
+                    stats.lossy_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             let msg = format!("byte_stream write failed: {}", e);
             println!("[livekit_ffi] {}", msg);
-            err(9, &msg)
+            err(203, &msg)
         },
     }
+}
+
+// --------- Statistics Functions ---------
+
+/// # Safety
+/// The caller must ensure `out_stats` points to valid writable memory.
+#[no_mangle]
+pub unsafe extern "C" fn lk_get_audio_stats(
+    client: *mut LkClientHandle,
+    out_stats: *mut LkAudioStats,
+) -> LkResult {
+    if client.is_null() {
+        return err(1, "client null");
+    }
+    if out_stats.is_null() {
+        return err(4, "out_stats null");
+    }
+    
+    let c = &*(client as *const Client);
+    let g = c.0.lock().unwrap();
+    
+    let (capacity, queued, underruns, overruns) = if let Some(ring) = &g.ring {
+        let queued = ring.prod.slots();
+        (
+            ring.capacity_frames as c_int,
+            queued as c_int,
+            ring.underruns.load(Ordering::Relaxed),
+            ring.overruns.load(Ordering::Relaxed),
+        )
+    } else {
+        (0, 0, 0, 0)
+    };
+    
+    *out_stats = LkAudioStats {
+        sample_rate: g.current_sample_rate,
+        channels: g.current_channels,
+        ring_capacity_frames: capacity,
+        ring_queued_frames: queued,
+        underruns,
+        overruns,
+    };
+    
+    ok()
+}
+
+/// # Safety
+/// The caller must ensure `out_stats` points to valid writable memory.
+#[no_mangle]
+pub unsafe extern "C" fn lk_get_data_stats(
+    client: *mut LkClientHandle,
+    out_stats: *mut LkDataStats,
+) -> LkResult {
+    if client.is_null() {
+        return err(1, "client null");
+    }
+    if out_stats.is_null() {
+        return err(4, "out_stats null");
+    }
+    
+    let c = &*(client as *const Client);
+    let g = c.0.lock().unwrap();
+    
+    *out_stats = LkDataStats {
+        reliable_sent_bytes: g.data_stats.reliable_sent_bytes.load(Ordering::Relaxed),
+        reliable_dropped: g.data_stats.reliable_dropped.load(Ordering::Relaxed),
+        lossy_sent_bytes: g.data_stats.lossy_sent_bytes.load(Ordering::Relaxed),
+        lossy_dropped: g.data_stats.lossy_dropped.load(Ordering::Relaxed),
+    };
+    
+    ok()
 }
