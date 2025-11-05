@@ -66,13 +66,28 @@ If you need a local media server for testing, see:
 
 docs/LOCAL_LIVEKIT_QUICKSTART.md
 
-## Token minting (dev tool)
+## Token Generation
 
-Need long‑lived dev tokens? Use the included utility:
+For quick multi‑client testing, generate 2 publishers and 4 subscribers:
 
+– VS Code task: Run Task → "Generate Test Tokens (168h)". It writes six tokens to `tools/test_tokens.txt`.
+
+– PowerShell (equivalent):
+```
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools/generate-test-tokens.ps1 -Room test -Ttl 168h
+```
+
+By default, the scripts use `LIVEKIT_API_KEY=devkey` and `LIVEKIT_API_SECRET=secret` for local testing. For real servers, set your env vars first:
+```
+setx LIVEKIT_API_KEY "<your_key>"
+setx LIVEKIT_API_SECRET "<your_secret>"
+# then reopen the shell (or use $Env:LIVEKIT_API_KEY / $Env:LIVEKIT_API_SECRET in the current session)
+```
+
+To mint a single token manually:
 ```
 pwsh ./tools/mint-token.ps1 -Identity user1 -Room demo -Ttl 168h
 ```
 
-More options and examples in `docs/TOKEN_MINTING.md`.
+Note: `tools/test_tokens.txt` is git‑ignored and safe to regenerate.
 
