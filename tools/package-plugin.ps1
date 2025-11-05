@@ -26,18 +26,18 @@ if (-not (Test-Path $IncludeSrc)) { Die "[package-plugin] Include dir not found:
 # artifacts/plugin-windows-x64/
 #   ThirdParty/livekit_ffi/include/*.h
 #   ThirdParty/livekit_ffi/lib/Win64/Release/{livekit_ffi.dll.lib, livekit_ffi.lib}
-#   Binaries/Win64/livekit_ffi.dll (+ .pdb)
+#   ThirdParty/livekit_ffi/bin/Win64/Release/{livekit_ffi.dll, livekit_ffi.pdb}
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $OutThirdParty = Join-Path $OutDir (Join-Path "ThirdParty" $ThirdPartyName)
 $OutInclude    = Join-Path $OutThirdParty "include"
 $OutLib        = Join-Path $OutThirdParty "lib\Win64\Release"
-$OutBinaries   = Join-Path $OutDir "Binaries\Win64"
+$OutBin        = Join-Path $OutThirdParty "bin\Win64\Release"
 
 New-Item -ItemType Directory -Force -Path $OutInclude | Out-Null
 New-Item -ItemType Directory -Force -Path $OutLib | Out-Null
-New-Item -ItemType Directory -Force -Path $OutBinaries | Out-Null
+New-Item -ItemType Directory -Force -Path $OutBin | Out-Null
 
 Info "[package-plugin] Copying headers -> $OutInclude"
 Copy-Item (Join-Path $IncludeSrc "*.h") -Destination $OutInclude -Force
@@ -48,10 +48,10 @@ $static = Join-Path $TargetDir "livekit_ffi.lib"
 if (Test-Path $implib) { Copy-Item $implib -Destination $OutLib -Force } else { Warn "[package-plugin] Missing $implib" }
 if (Test-Path $static) { Copy-Item $static -Destination $OutLib -Force } else { Warn "[package-plugin] Missing $static" }
 
-Info "[package-plugin] Copying binaries -> $OutBinaries"
+Info "[package-plugin] Copying binaries -> $OutBin"
 $dll = Join-Path $TargetDir "livekit_ffi.dll"
 $pdb = Join-Path $TargetDir "livekit_ffi.pdb"
-if (Test-Path $dll) { Copy-Item $dll -Destination $OutBinaries -Force } else { Warn "[package-plugin] Missing $dll" }
-if (Test-Path $pdb) { Copy-Item $pdb -Destination $OutBinaries -Force } else { Warn "[package-plugin] Missing $pdb" }
+if (Test-Path $dll) { Copy-Item $dll -Destination $OutBin -Force } else { Warn "[package-plugin] Missing $dll" }
+if (Test-Path $pdb) { Copy-Item $pdb -Destination $OutBin -Force } else { Warn "[package-plugin] Missing $pdb" }
 
 Info "[package-plugin] Done -> $OutDir"
