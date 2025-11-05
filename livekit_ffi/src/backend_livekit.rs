@@ -632,6 +632,140 @@ pub extern "C" fn lk_connect_with_role(
 }
 
 #[no_mangle]
+pub extern "C" fn lk_connect_async(
+    client: *mut LkClientHandle,
+    url: *const c_char,
+    token: *const c_char,
+) -> LkResult {
+    // Default to Both
+    lk_connect_with_role_async(client, url, token, LkRole::Both)
+}
+
+#[no_mangle]
+pub extern "C" fn lk_connect_with_role_async(
+    client: *mut LkClientHandle,
+    url: *const c_char,
+    token: *const c_char,
+    role: LkRole,
+) -> LkResult {
+    if client.is_null() {
+        return err(1, "client null");
+    }
+
+    let url = unsafe { match cstr(url) {
+        Ok(s) => s.to_string(),
+        Err(e) => return err(2, &e.to_string()),
+    }};
+    let token = unsafe { match cstr(token) {
+        Ok(s) => s.to_string(),
+        Err(e) => return err(2, &e.to_string()),
+    }};
+
+    let c = unsafe { &*(client as *const Client) };
+    let client_arc = c.0.clone();
+
+    // Early-out if already connected
+    if let Ok(g) = client_arc.lock() {
+        if g.room.is_some() {
+            return err(104, "already connected");
+        }
+        // Notify connecting state if callback present
+        if let Some((cb, user)) = g.connection_cb.as_ref() {
+            cb(user.0, LkConnectionState::Connecting, 0, ptr::null());
+        }
+    }
+
+    // Spawn the connection attempt without blocking the caller
+    let rt = runtime();
+    rt.spawn(async move {
+        let mut opts = RoomOptions::default();
+        if matches!(role, LkRole::Publisher) { opts.auto_subscribe = false; }
+        let res = Room::connect(&url, &token, opts).await;
+        match res {
+            Ok((room, mut events)) => {
+                // On success, update state and notify
+                if let Ok(mut g) = client_arc.lock() {
+                    g.role = role;
+                    g.room = Some(room);
+                    if let Some((cb, user)) = g.connection_cb.as_ref() {
+                        cb(user.0, LkConnectionState::Connected, 0, ptr::null());
+                    }
+                }
+
+                // Spawn event processing loop (mirrors sync connect)
+                let client_arc2 = client_arc.clone();
+                runtime().spawn(async move {
+                    while let Some(ev) = events.recv().await {
+                        match ev {
+                            RoomEvent::ByteStreamOpened { reader, topic: _, participant_identity: _ } => {
+                                let Some(reader) = reader.take() else { continue; };
+                                if let Ok(content) = reader.read_all().await {
+                                    let buf: Vec<u8> = content.to_vec();
+                                    if let Ok(guard) = client_arc2.lock() {
+                                        if let Some((cb, user)) = guard.data_cb.as_ref() { cb(user.0, buf.as_ptr(), buf.len()); }
+                                    }
+                                }
+                            }
+                            RoomEvent::Disconnected { reason } => {
+                                if let Ok(guard) = client_arc2.lock() {
+                                    if let Some((cb, user)) = guard.connection_cb.as_ref() {
+                                        let msg = CString::new(format!("{:?}", reason)).unwrap_or_default();
+                                        cb(user.0, LkConnectionState::Disconnected, 0, msg.as_ptr());
+                                    }
+                                }
+                            }
+                            RoomEvent::ConnectionStateChanged(state) => {
+                                if let Ok(guard) = client_arc2.lock() {
+                                    if let Some((cb, user)) = guard.connection_cb.as_ref() {
+                                        let lk_state = match state {
+                                            livekit::ConnectionState::Disconnected => LkConnectionState::Disconnected,
+                                            livekit::ConnectionState::Connected => LkConnectionState::Connected,
+                                            livekit::ConnectionState::Reconnecting => LkConnectionState::Reconnecting,
+                                        };
+                                        cb(user.0, lk_state, 0, ptr::null());
+                                    }
+                                }
+                            }
+                            RoomEvent::TrackSubscribed { track, publication, participant: _ } => {
+                                if let RemoteTrack::Audio(audio) = track {
+                                    let rtc = audio.rtc_track();
+                                    let client_arc3 = client_arc2.clone();
+                                    let (sample_rate, channels) = if let Ok(guard) = client_arc2.lock() { (guard.audio_output_format.sample_rate as u32, guard.audio_output_format.channels as u32) } else { (48_000u32, 1u32) };
+                                    tokio::spawn(async move {
+                                        let mut stream = NativeAudioStream::new(rtc, sample_rate as i32, channels as i32);
+                                        while let Some(frame) = stream.next().await {
+                                            let buf: Vec<i16> = frame.data.as_ref().to_vec();
+                                            if let Ok(guard) = client_arc3.lock() {
+                                                if let Some((cb, user)) = guard.audio_cb.as_ref() {
+                                                    let frames_per_channel = frame.samples_per_channel as usize;
+                                                    let ch = frame.num_channels as c_int;
+                                                    let sr = frame.sample_rate as c_int;
+                                                    cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr);
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            other => { println!("[livekit_ffi] Event: {:?}", other); }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                if let Ok(guard) = client_arc.lock() {
+                    if let Some((cb, user)) = guard.connection_cb.as_ref() {
+                        let msg = CString::new(format!("{}", e)).unwrap_or_default();
+                        cb(user.0, LkConnectionState::Failed, 1, msg.as_ptr());
+                    }
+                }
+            }
+        }
+    });
+
+    ok()
+}
+#[no_mangle]
 pub extern "C" fn lk_disconnect(client: *mut LkClientHandle) -> LkResult {
     if client.is_null() {
         return err(1, "client null");

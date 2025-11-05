@@ -188,6 +188,18 @@ LkResult lk_connect(LkClientHandle*, const char* url, const char* token);
 LkResult lk_connect_with_role(LkClientHandle*, const char* url, const char* token, LkRole role);
 
 /**
+ * Asynchronously connect to LiveKit room (defaults to LkRoleBoth).
+ * Returns immediately; connection result will be delivered via lk_set_connection_callback.
+ */
+LkResult lk_connect_async(LkClientHandle*, const char* url, const char* token);
+
+/**
+ * Asynchronously connect to LiveKit room with specified role.
+ * Returns immediately; connection result will be delivered via lk_set_connection_callback.
+ */
+LkResult lk_connect_with_role_async(LkClientHandle*, const char* url, const char* token, LkRole role);
+
+/**
  * Disconnect from LiveKit room.
  * Blocks until disconnect is complete and callbacks are quiesced.
  */

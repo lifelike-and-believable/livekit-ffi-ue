@@ -1,8 +1,8 @@
 # LiveKit FFI + Unreal Bridge (Cross‑Platform)
 
 This repo gives you:
-- A **Rust staticlib** that exposes a tiny C ABI (`livekit_ffi.h`).
-- A **Unreal Engine plugin** that links that lib and exposes `ULiveKitPublisherComponent`.
+- A **Rust FFI library** that exposes a tiny C ABI (`livekit_ffi.h`).
+- A **Unreal Engine plugin** that ships with a ready ThirdParty layout and exposes `ULiveKitPublisherComponent`.
 
 ## Two build modes
 
@@ -14,9 +14,12 @@ This repo gives you:
 cd livekit_ffi
 cargo build --release --features with_livekit
 ```
-Artifacts:
-- Windows (MSVC): `target/release/livekit_ffi.lib`
-- Linux/macOS: `target/release/liblivekit_ffi.a`
+Artifacts (Windows MSVC):
+- DLL: `target/release/livekit_ffi.dll`
+- Import lib: `target/release/livekit_ffi.dll.lib`
+- PDB: `target/release/livekit_ffi.pdb`
+
+SDK packaging also includes a static library for advanced use, but the UE plugin links the import lib and delay‑loads the DLL at runtime.
 
 > Requires: Rust toolchain + Cargo. On Windows, make sure you build from a VS **x64 Native Tools** prompt so `cl`/`link` are available.
 
@@ -31,20 +34,23 @@ Produces the same filenames but with no‑op internals.
 
 Copy `ue/Plugins/LiveKitBridge` into your UE project’s `Plugins/` folder.
 
-Place the built static library into:
+ThirdParty layout (plugin root):
 ```
-Plugins/LiveKitBridge/Source/LiveKitBridge/ThirdParty/livekit_ffi/lib/<Platform>/Release/
+Plugins/LiveKitBridge/
+	ThirdParty/livekit_ffi/
+		include/                 # headers (livekit_ffi.h)
+		lib/Win64/Release/       # import lib (livekit_ffi.dll.lib)
+		bin/Win64/Release/       # DLL + PDB (livekit_ffi.dll, livekit_ffi.pdb)
 ```
-(Win64: `livekit_ffi.lib`, Linux/macOS: `liblivekit_ffi.a`)
-
-`livekit_ffi.h` is mirrored under:
-```
-Plugins/LiveKitBridge/Source/LiveKitBridge/ThirdParty/livekit_ffi/include/
-```
+Build.cs resolves headers via `PluginDirectory` and stages the DLL from `ThirdParty/bin`.
 
 Enable the plugin, add `ULiveKitPublisherComponent` to an actor, set `RoomUrl` & `Token`, and call:
 - `PushAudioPCM(InterleavedFrames, FramesPerChannel)` every 10–20ms @ 48kHz mono
 - `SendMocap(Bytes, bReliable)` for pose/state (lossy for high‑rate deltas, reliable for sparse state)
+
+Connection behavior:
+- The component defaults to non‑blocking connects (`bConnectAsync = true`) using the FFI connection callback.
+- The plugin delay‑loads `livekit_ffi.dll` and proactively loads it on module startup; it also falls back to loading from `ThirdParty/bin`.
 
 ## Notes
 
