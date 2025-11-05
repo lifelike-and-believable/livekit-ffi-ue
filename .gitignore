@@ -3,3 +3,25 @@ Binaries
 DerivedDataCache
 Intermediate
 Saved
+
+# Build artifacts
+artifacts/
+livekit_ffi/target/
+
+# Tools
+tools/token-gen/node_modules/
+tools/livekit-server.exe
+tools/test_tokens.txt
+
+# Unreal typical nested folders
+ue/**/Binaries/
+ue/**/DerivedDataCache/
+ue/**/Intermediate/
+ue/**/Saved/
+
+# Plugin sample ThirdParty libs (headers are small; libs are large)
+ue/**/Plugins/**/ThirdParty/**/lib/
+ue/**/Plugins/**/ThirdParty/**/bin/
+
+# Optional: sandbox content assets can be large; avoid by default
+ue/LiveKitSandbox/Content/*.uasset

@@ -30,33 +30,91 @@ void ULiveKitPublisherComponent::BeginPlay()
         Client->SetAudioCallback(&ULiveKitPublisherComponent::AudioThunk, this);
     }
 
-    const bool bOk = Client->ConnectWithRole(TCHAR_TO_UTF8(*RoomUrl), TCHAR_TO_UTF8(*Token), LkRoleVal);
-    if (!bOk)
+    if (bConnectAsync)
     {
-        const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
-        if (!Reason.IsEmpty())
+        const FString UrlCopy = RoomUrl;
+        const FString TokenCopy = Token;
+        Async(EAsyncExecution::ThreadPool, [this, UrlCopy, TokenCopy, LkRoleVal]()
         {
-            UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed for %s: %s"), *RoomUrl, *Reason);
-        }
-        else
-        {
-            UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed for %s"), *RoomUrl);
-        }
-    } else
-    {
-        const TCHAR* RoleStr = TEXT("Both");
-        switch (Role)
-        {
-            case ELiveKitClientRole::Publisher: RoleStr = TEXT("Publisher"); break;
-            case ELiveKitClientRole::Subscriber: RoleStr = TEXT("Subscriber"); break;
-            case ELiveKitClientRole::Auto: RoleStr = TEXT("Auto"); break;
-            case ELiveKitClientRole::Both: default: RoleStr = TEXT("Both"); break;
-        }
-        UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit connected to %s (Role=%s, Recv: mocap=%s audio=%s)"), *RoomUrl, RoleStr, bReceiveMocap?TEXT("on"):TEXT("off"), bReceiveAudio?TEXT("on"):TEXT("off"));
-        AsyncTask(ENamedThreads::GameThread, [this]()
-        {
-            if (IsValid(this)) { OnConnected(RoomUrl, Role, bReceiveMocap, bReceiveAudio); }
+            const bool bOk = Client && Client->ConnectWithRole(TCHAR_TO_UTF8(*UrlCopy), TCHAR_TO_UTF8(*TokenCopy), LkRoleVal);
+            if (!bOk)
+            {
+                const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
+                AsyncTask(ENamedThreads::GameThread, [this, Reason]()
+                {
+                    if (!IsValid(this)) return;
+                    if (!Reason.IsEmpty())
+                    {
+                        UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed: %s"), *Reason);
+                    }
+                    else
+                    {
+                        UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed"));
+                    }
+                });
+            }
+            else
+            {
+                AsyncTask(ENamedThreads::GameThread, [this]()
+                {
+                    if (!IsValid(this)) return;
+                    const TCHAR* RoleStr = TEXT("Both");
+                    switch (Role)
+                    {
+                        case ELiveKitClientRole::Publisher: RoleStr = TEXT("Publisher"); break;
+                        case ELiveKitClientRole::Subscriber: RoleStr = TEXT("Subscriber"); break;
+                        case ELiveKitClientRole::Auto: RoleStr = TEXT("Auto"); break;
+                        case ELiveKitClientRole::Both: default: RoleStr = TEXT("Both"); break;
+                    }
+                    UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit connected to %s (Role=%s, Recv: mocap=%s audio=%s)"), *RoomUrl, RoleStr, bReceiveMocap?TEXT("on"):TEXT("off"), bReceiveAudio?TEXT("on"):TEXT("off"));
+                    OnConnected(RoomUrl, Role, bReceiveMocap, bReceiveAudio);
+                });
+            }
         });
+
+        // Optional timeout supervision (does not cancel connect, only logs/pulses feedback)
+        if (GetWorld() && ConnectTimeoutSec > 0.f)
+        {
+            GetWorld()->GetTimerManager().SetTimer(ConnectTimeoutHandle, [this]()
+            {
+                if (!IsValid(this) || !Client) return;
+                if (!Client->IsReady())
+                {
+                    UE_LOG(LogLiveKitBridge, Warning, TEXT("LiveKit connect not ready after %.1fs (server down?)"), ConnectTimeoutSec);
+                }
+            }, ConnectTimeoutSec, false);
+        }
+    }
+    else
+    {
+        const bool bOk = Client->ConnectWithRole(TCHAR_TO_UTF8(*RoomUrl), TCHAR_TO_UTF8(*Token), LkRoleVal);
+        if (!bOk)
+        {
+            const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
+            if (!Reason.IsEmpty())
+            {
+                UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed for %s: %s"), *RoomUrl, *Reason);
+            }
+            else
+            {
+                UE_LOG(LogLiveKitBridge, Error, TEXT("LiveKit connect failed for %s"), *RoomUrl);
+            }
+        } else
+        {
+            const TCHAR* RoleStr = TEXT("Both");
+            switch (Role)
+            {
+                case ELiveKitClientRole::Publisher: RoleStr = TEXT("Publisher"); break;
+                case ELiveKitClientRole::Subscriber: RoleStr = TEXT("Subscriber"); break;
+                case ELiveKitClientRole::Auto: RoleStr = TEXT("Auto"); break;
+                case ELiveKitClientRole::Both: default: RoleStr = TEXT("Both"); break;
+            }
+            UE_LOG(LogLiveKitBridge, Log, TEXT("LiveKit connected to %s (Role=%s, Recv: mocap=%s audio=%s)"), *RoomUrl, RoleStr, bReceiveMocap?TEXT("on"):TEXT("off"), bReceiveAudio?TEXT("on"):TEXT("off"));
+            AsyncTask(ENamedThreads::GameThread, [this]()
+            {
+                if (IsValid(this)) { OnConnected(RoomUrl, Role, bReceiveMocap, bReceiveAudio); }
+            });
+        }
     }
 
     if (bStartDebugTone)
