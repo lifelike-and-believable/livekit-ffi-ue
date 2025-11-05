@@ -7,7 +7,7 @@ This guide shows how to consume the prebuilt LiveKit FFI (headers + libs + DLL) 
 Options:
 
 - From CI: Download the `livekit-ffi-sdk-windows-x64` artifact (or zip) produced by GitHub Actions.
-- From CI (drop-in): Download the `livekit-ffi-plugin-windows-x64` zip for a ready-to-use plugin layout (`ThirdParty/livekit_ffi` + `Binaries/Win64/livekit_ffi.dll`).
+- From CI (drop-in): Download the `livekit-ffi-plugin-windows-x64` zip for a ready-to-use plugin layout (`ThirdParty/livekit_ffi` with lib and bin subfolders).
 - Local build: Inside this repo, run:
 
 ```powershell
@@ -25,27 +25,25 @@ lib/Win64/Release/      # livekit_ffi.dll.lib + livekit_ffi.lib
 
 ## 2) Place files into your plugin
 
-In your other plugin, create a ThirdParty layout compatible with Unreal ModuleRules:
+In your other plugin, create a ThirdParty layout under your module directory for straightforward paths:
 
 ```
 YourPlugin/
   Source/
     YourPlugin/
       YourPlugin.Build.cs
-    ThirdParty/
-      livekit_ffi/
-        include/                # copy SDK include/*
-        lib/Win64/Release/      # copy SDK lib/Win64/Release/*
-  Binaries/
-    Win64/
-      livekit_ffi.dll           # copy SDK bin/livekit_ffi.dll
+      ThirdParty/
+        livekit_ffi/
+          include/                # copy SDK include/*
+          lib/Win64/Release/      # copy SDK lib/Win64/Release/livekit_ffi.dll.lib
+          bin/Win64/Release/      # copy SDK bin/{livekit_ffi.dll, livekit_ffi.pdb}
 ```
 
 Notes:
 - Keep the folder names as shown for predictable paths in the Build.cs example below.
-- Ship `livekit_ffi.dll` in `Binaries/Win64` so the editor/game can load it at runtime.
+- The DLL will be staged from `ThirdParty/.../bin/Win64/Release` at build time; no need to place it in `Binaries/Win64` manually.
 
-Shortcut: If you grabbed the `livekit-ffi-plugin-windows-x64` CI artifact, you can drop its contents directly into your plugin root to create `ThirdParty/livekit_ffi/...` and `Binaries/Win64/`.
+Shortcut: If you grabbed the `livekit-ffi-plugin-windows-x64` CI artifact, drop its `ThirdParty/livekit_ffi` folder under your module directory (`Source/YourPlugin/ThirdParty/`). The plugin artifact intentionally omits the static `livekit_ffi.lib`.
 
 ## 3) Configure YourPlugin.Build.cs
 
@@ -66,8 +64,8 @@ public class YourPlugin : ModuleRules
             "Core", "CoreUObject", "Engine"
         });
 
-        // LiveKit FFI ThirdParty layout
-        string ThirdPartyDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "livekit_ffi");
+        // LiveKit FFI ThirdParty layout placed under this module's directory
+        string ThirdPartyDir = Path.Combine(ModuleDirectory, "ThirdParty", "livekit_ffi");
         string IncludeDir = Path.Combine(ThirdPartyDir, "include");
         PublicIncludePaths.Add(IncludeDir);
 
@@ -79,9 +77,9 @@ public class YourPlugin : ModuleRules
             // Delay-load so the editor starts without immediately resolving the DLL
             PublicDelayLoadDLLs.Add("livekit_ffi.dll");
 
-            // Stage the DLL for runtime (editor and packaged builds)
-            string BinDll = Path.Combine(PluginDirectory, "Binaries", "Win64", "livekit_ffi.dll");
-            RuntimeDependencies.Add(BinDll);
+          // Stage the DLL from ThirdParty/bin for runtime (editor and packaged builds)
+          string BinDll = Path.Combine(ThirdPartyDir, "bin", "Win64", "Release", "livekit_ffi.dll");
+          RuntimeDependencies.Add(BinDll);
         }
     }
 }

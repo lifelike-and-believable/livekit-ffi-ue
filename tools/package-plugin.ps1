@@ -39,14 +39,15 @@ New-Item -ItemType Directory -Force -Path $OutInclude | Out-Null
 New-Item -ItemType Directory -Force -Path $OutLib | Out-Null
 New-Item -ItemType Directory -Force -Path $OutBin | Out-Null
 
+# Ensure no stale static libs remain from previous runs
+Remove-Item -ErrorAction SilentlyContinue (Join-Path $OutLib "livekit_ffi.lib")
+
 Info "[package-plugin] Copying headers -> $OutInclude"
 Copy-Item (Join-Path $IncludeSrc "*.h") -Destination $OutInclude -Force
 
-Info "[package-plugin] Copying libs -> $OutLib"
+Info "[package-plugin] Copying libs -> $OutLib (import lib only)"
 $implib = Join-Path $TargetDir "livekit_ffi.dll.lib"
-$static = Join-Path $TargetDir "livekit_ffi.lib"
 if (Test-Path $implib) { Copy-Item $implib -Destination $OutLib -Force } else { Warn "[package-plugin] Missing $implib" }
-if (Test-Path $static) { Copy-Item $static -Destination $OutLib -Force } else { Warn "[package-plugin] Missing $static" }
 
 Info "[package-plugin] Copying binaries -> $OutBin"
 $dll = Join-Path $TargetDir "livekit_ffi.dll"

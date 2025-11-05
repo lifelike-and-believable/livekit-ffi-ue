@@ -130,11 +130,7 @@ if ($UePluginDir) {
       Warn "[copy] Import lib not found at $importLib"
     }
 
-    $staticLib = Join-Path $targetDir "livekit_ffi.lib"
-    if (Test-Path $staticLib) {
-      Copy-Item $staticLib -Destination (Join-Path $tpLib "livekit_ffi.lib") -Force
-      Info "[copy] Copied static lib to $tpLib (not used by UE)"
-    }
+    # Do not copy static .lib for UE; keep plugin ThirdParty lean and DLL-based
   } else {
     Warn "[copy] UE plugin dir not found: $UePluginDir (skipping copy)"
   }
