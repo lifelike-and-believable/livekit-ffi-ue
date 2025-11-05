@@ -21,6 +21,7 @@ ue/**/Saved/
 
 # Plugin sample ThirdParty libs (headers are small; libs are large)
 ue/**/Plugins/**/ThirdParty/**/lib/
+ue/**/Plugins/**/ThirdParty/**/bin/
 
 # Optional: sandbox content assets can be large; avoid by default
 ue/LiveKitSandbox/Content/*.uasset

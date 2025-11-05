@@ -100,7 +100,7 @@ if ($UePluginDir) {
     $targetDir = Join-Path $CrateDir "target\release"
 
     # Place both the DLL and LIB under the plugin's ThirdParty folder
-    $tpBase = Join-Path $UePluginDir "Source\LiveKitBridge\ThirdParty\livekit_ffi"
+    $tpBase = Join-Path $UePluginDir "ThirdParty\livekit_ffi"
     $tpBin  = Join-Path $tpBase "bin\Win64\Release"
     $tpLib  = Join-Path $tpBase "lib\Win64\Release"
 

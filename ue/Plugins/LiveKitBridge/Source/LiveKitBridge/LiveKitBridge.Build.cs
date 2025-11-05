@@ -8,7 +8,7 @@ public class LiveKitBridge : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "Projects" });
 
-        string ThirdPartyBase = Path.Combine(ModuleDirectory, "ThirdParty", "livekit_ffi");
+        string ThirdPartyBase = Path.Combine(PluginDirectory, "ThirdParty", "livekit_ffi");
         string IncludePath = Path.Combine(ThirdPartyBase, "include");
         PublicIncludePaths.Add(IncludePath);
 

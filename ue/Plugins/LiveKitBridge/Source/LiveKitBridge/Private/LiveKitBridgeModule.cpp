@@ -38,7 +38,7 @@ void FLiveKitBridgeModule::StartupModule()
 
     const FString BaseDir = Plugin->GetBaseDir();
     const FString BinariesPath = FPaths::Combine(BaseDir, TEXT("Binaries"), TEXT("Win64"), TEXT("livekit_ffi.dll"));
-    const FString ThirdPartyBinPath = FPaths::Combine(BaseDir, TEXT("Source"), TEXT("LiveKitBridge"), TEXT("ThirdParty"), TEXT("livekit_ffi"), TEXT("bin"), TEXT("Win64"), TEXT("Release"), TEXT("livekit_ffi.dll"));
+    const FString ThirdPartyBinPath = FPaths::Combine(BaseDir, TEXT("ThirdParty"), TEXT("livekit_ffi"), TEXT("bin"), TEXT("Win64"), TEXT("Release"), TEXT("livekit_ffi.dll"));
 
     FString TryPaths[2] = { BinariesPath, ThirdPartyBinPath };
 
