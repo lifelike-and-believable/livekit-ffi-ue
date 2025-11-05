@@ -1,0 +1,184 @@
+# Using LiveKit FFI in Another Unreal Plugin
+
+This guide shows how to consume the prebuilt LiveKit FFI (headers + libs + DLL) in a separate Unreal Engine plugin, and how to reference `ULiveKitPublisherComponent` for Blueprint/C++ usage patterns.
+
+## 1) Get the SDK artifacts
+
+Options:
+
+- From CI: Download the `livekit-ffi-sdk-windows-x64` artifact (or zip) produced by GitHub Actions.
+- From CI (drop-in): Download the `livekit-ffi-plugin-windows-x64` zip for a ready-to-use plugin layout (`ThirdParty/livekit_ffi` + `Binaries/Win64/livekit_ffi.dll`).
+- Local build: Inside this repo, run:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -WithLiveKit
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools\package.ps1 -CrateDir livekit_ffi -OutDir artifacts\windows-x64
+```
+
+The SDK layout (Windows x64):
+
+```
+include/                # C headers (e.g., livekit_ffi.h)
+bin/                    # livekit_ffi.dll (+ PDB)
+lib/Win64/Release/      # livekit_ffi.dll.lib + livekit_ffi.lib
+```
+
+## 2) Place files into your plugin
+
+In your other plugin, create a ThirdParty layout compatible with Unreal ModuleRules:
+
+```
+YourPlugin/
+  Source/
+    YourPlugin/
+      YourPlugin.Build.cs
+    ThirdParty/
+      livekit_ffi/
+        include/                # copy SDK include/*
+        lib/Win64/Release/      # copy SDK lib/Win64/Release/*
+  Binaries/
+    Win64/
+      livekit_ffi.dll           # copy SDK bin/livekit_ffi.dll
+```
+
+Notes:
+- Keep the folder names as shown for predictable paths in the Build.cs example below.
+- Ship `livekit_ffi.dll` in `Binaries/Win64` so the editor/game can load it at runtime.
+
+Shortcut: If you grabbed the `livekit-ffi-plugin-windows-x64` CI artifact, you can drop its contents directly into your plugin root to create `ThirdParty/livekit_ffi/...` and `Binaries/Win64/`.
+
+## 3) Configure YourPlugin.Build.cs
+
+Add include paths, link the import lib, delay-load the DLL, and declare a runtime dependency so the DLL is staged into builds.
+
+```csharp
+using UnrealBuildTool;
+using System.IO;
+
+public class YourPlugin : ModuleRules
+{
+    public YourPlugin(ReadOnlyTargetRules Target) : base(Target)
+    {
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        PublicDependencyModuleNames.AddRange(new string[]
+        {
+            "Core", "CoreUObject", "Engine"
+        });
+
+        // LiveKit FFI ThirdParty layout
+        string ThirdPartyDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "livekit_ffi");
+        string IncludeDir = Path.Combine(ThirdPartyDir, "include");
+        PublicIncludePaths.Add(IncludeDir);
+
+        if (Target.Platform == UnrealTargetPlatform.Win64)
+        {
+            string LibDir = Path.Combine(ThirdPartyDir, "lib", "Win64", "Release");
+            PublicAdditionalLibraries.Add(Path.Combine(LibDir, "livekit_ffi.dll.lib"));
+
+            // Delay-load so the editor starts without immediately resolving the DLL
+            PublicDelayLoadDLLs.Add("livekit_ffi.dll");
+
+            // Stage the DLL for runtime (editor and packaged builds)
+            string BinDll = Path.Combine(PluginDirectory, "Binaries", "Win64", "livekit_ffi.dll");
+            RuntimeDependencies.Add(BinDll);
+        }
+    }
+}
+```
+
+## 4) Call the FFI from your plugin code (optional)
+
+Include the header and call the C API directly if you are not using our ready-made component:
+
+```cpp
+#include "livekit_ffi.h"
+
+// Example: create client and connect
+LkClientHandle* H = lk_client_create();
+LkResult R = lk_connect_with_role(H, "ws://localhost:7880", YourJwtToken, LkRolePublisher);
+if (R.code != 0) { /* handle error & free R.message via lk_free_str */ }
+
+// Set callbacks
+lk_client_set_data_callback(H, YourDataCb, YourUserPtr);
+lk_client_set_audio_callback(H, YourAudioCb, YourUserPtr);
+
+// Send data
+lk_send_data(H, payload, payloadLen, LkReliability::Reliable);
+
+// Publish audio (interleaved i16)
+lk_publish_audio_pcm_i16(H, interleaved, framesPerChannel, channels, sampleRate);
+
+// Disconnect
+lk_disconnect(H);
+```
+
+See `livekit_ffi/include/livekit_ffi.h` for function signatures.
+
+## 5) Using LiveKitPublisherComponent as a reference
+
+`ULiveKitPublisherComponent` (in this repo) provides a ready-to-use pattern for:
+
+- Role-aware connection (Publisher/Subscriber/Both)
+- Data send/receive via LiveKit byte streams
+- Audio publish/receive using a ring buffer → `NativeAudioSource` → `LocalAudioTrack`
+- Readiness gating and initial delays to let negotiation settle
+- Blueprint events for UX feedback
+
+Key properties:
+
+- `RoomUrl`: e.g. `ws://localhost:7880`
+- `Token`: LiveKit JWT with unique identity and proper grants
+- `Role`: `Publisher`, `Subscriber`, `Both`, or `Auto`
+- `bStartTestData`, `TestDataRateHz`, `TestDataPayloadBytes`, `bTestDataReliable`
+- `bStartDebugTone`, `ToneFrequencyHz`, `ToneAmplitude`, `SampleRate`, `Channels`
+- `bReceiveMocap`, `bReceiveAudio`
+
+Blueprint events you can implement:
+
+- `OnConnected(Url, Role, bRecvMocap, bRecvAudio)`
+- `OnDisconnected()`
+- `OnAudioPublishReady(SampleRate, Channels)`
+- `OnFirstAudioReceived(SampleRate, Channels, FramesPerChannel)`
+- `OnMocapSent(Bytes, bReliable)`
+- `OnMocapSendFailed(Bytes, bReliable, Reason)`
+- `OnMocapReceived(Payload)` (already existed)
+
+Minimal flow:
+
+1. Place a `ULiveKitPublisherComponent` in your actor.
+2. Set `RoomUrl` and `Token` (unique `identity` per client!).
+3. For publisher testing, set `Role=Publisher`, enable `bStartDebugTone` and/or `bStartTestData`.
+4. For subscribers, set `Role=Subscriber`, enable `bReceiveMocap` and `bReceiveAudio`.
+5. Bind to `OnMocapReceived` and audio events for confirmation and UX.
+
+## 6) Token and permissions checklist
+
+- Each client must use a token with a unique `identity`.
+- Publisher grants: `roomJoin: true`, `canPublish: true`, `canPublishData: true` (if sending data), optionally `canSubscribe` for Both.
+- Subscriber grants: `roomJoin: true`, `canSubscribe: true`.
+- Using the same token/identity concurrently will replace the previous participant (disconnect behavior).
+
+## 7) Troubleshooting
+
+- "engine is closed" when publishing audio: often caused by identity collisions or server-side rejection; verify token grants and unique identities.
+- Data send "internal error": ensure `canPublishData: true` for the publisher.
+- No receives: subscribers need `auto_subscribe` enabled (default for subscribers/Both). In our implementation, we disable `auto_subscribe` only for explicit Publisher role.
+- Hot reload: Use Ctrl+Alt+F11 (Live Coding) for C++ changes; restart the editor when replacing the DLL.
+
+## 8) Building from source (Windows)
+
+If you prefer to build the FFI once inside your own repo:
+
+```powershell
+# Static MSVC runtime to match libwebrtc_sys
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+cd livekit_ffi
+cargo build --release --features with_livekit
+```
+
+Artifacts appear in `livekit_ffi/target/release`.
+
+---
+
+For additional examples, see `ue/Plugins/LiveKitBridge/` in this repo.

@@ -72,8 +72,16 @@ if ($features.Count -gt 0) {
 Info "[cargo] Building with toolchain $RequiredToolchain"
 Push-Location $CrateDir
 $prevRUSTFLAGS = $env:RUSTFLAGS
-# Force static MSVC runtime to match third-party static libs (webrtc-sys)
-$env:RUSTFLAGS = "-C target-feature=+crt-static"
+# Runtime library selection:
+# NOTE: libwebrtc_sys is built with static MSVC runtime (/MT). To avoid MT/MD mismatches,
+#       build our crate with static CRT when using LiveKit.
+# - With LiveKit: force static CRT
+# - Otherwise: still prefer static CRT for simpler redistribution
+if ($WithLiveKit) {
+  $env:RUSTFLAGS = "-C target-feature=+crt-static"
+} else {
+  $env:RUSTFLAGS = "-C target-feature=+crt-static"
+}
 Info "[env] RUSTFLAGS=$($env:RUSTFLAGS)"
 $cmd = @("+" + $RequiredToolchain) + $cargoArgs
 Write-Host ("cargo " + ($cmd -join " ")) -ForegroundColor DarkGray
