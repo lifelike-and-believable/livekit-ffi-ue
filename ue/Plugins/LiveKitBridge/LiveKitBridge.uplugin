@@ -1,0 +1,16 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.2.0",
+  "FriendlyName": "LiveKit Bridge",
+  "Description": "LiveKit via Rust FFI for audio + data",
+  "Category": "Networking",
+  "Modules": [
+    {
+      "Name": "LiveKitBridge",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "EnabledByDefault": true
+}
