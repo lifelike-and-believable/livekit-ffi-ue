@@ -6,8 +6,8 @@ Param(
 $ErrorActionPreference = 'Stop'
 
 # Local testing defaults if not provided via environment
-if (-not $env:LIVEKIT_API_KEY) { $env:LIVEKIT_API_KEY = "devkey" }
-if (-not $env:LIVEKIT_API_SECRET) { $env:LIVEKIT_API_SECRET = "secret" }
+if (-not $env:LIVEKIT_API_KEY) { $env:LIVEKIT_API_KEY = "API9WPW6zMpn7ud" }
+if (-not $env:LIVEKIT_API_SECRET) { $env:LIVEKIT_API_SECRET = "LkHfG7LhymQ5hHfNSayJclxkmQ9brAKj4rDVwbQdaGL" }
 
 $ScriptRoot = Split-Path -Parent $PSCommandPath
 $MintScript = Join-Path $ScriptRoot 'mint-token.ps1'
