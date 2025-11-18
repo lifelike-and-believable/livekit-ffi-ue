@@ -36,6 +36,11 @@ void lk_free_str(char* p);
 typedef struct LkClientHandle LkClientHandle;
 
 /**
+ * Opaque audio track handle for publisher-created tracks.
+ */
+typedef struct LkAudioTrackHandle LkAudioTrackHandle;
+
+/**
  * Data channel reliability mode.
  */
 typedef enum { LkReliable = 0, LkLossy = 1 } LkReliability;
@@ -252,6 +257,44 @@ LkResult lk_publish_audio_pcm_i16(
   size_t frames_per_channel,
   int32_t channels,
   int32_t sample_rate);
+
+/**
+ * Audio track configuration for dedicated publisher tracks.
+ * - track_name: optional track label (NULL uses default)
+ * - sample_rate / channels: format for the track
+ * - buffer_ms: desired ring buffer depth in milliseconds (0 = default)
+ */
+typedef struct {
+  const char* track_name;
+  int32_t sample_rate;
+  int32_t channels;
+  int32_t buffer_ms;
+} LkAudioTrackConfig;
+
+/**
+ * Create a dedicated audio track for publishing.
+ * Returns the track handle via out param on success.
+ */
+LkResult lk_audio_track_create(
+  LkClientHandle*,
+  const LkAudioTrackConfig* config,
+  LkAudioTrackHandle** out_track);
+
+/**
+ * Destroy a dedicated audio track handle and stop publishing it.
+ *
+ * Safe to call with NULL (no-op).
+ */
+LkResult lk_audio_track_destroy(LkAudioTrackHandle*);
+
+/**
+ * Publish PCM audio to a dedicated audio track handle.
+ * Format is determined by the track's configuration.
+ */
+LkResult lk_audio_track_publish_pcm_i16(
+  LkAudioTrackHandle*,
+  const int16_t* pcm_interleaved,
+  size_t frames_per_channel);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Data Channel

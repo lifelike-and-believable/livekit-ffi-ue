@@ -97,6 +97,8 @@ void ULiveKitPublisherComponent::BeginPlay()
 
 void ULiveKitPublisherComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
+    DataChannels.Empty();
+    AudioTracks.Empty();
     if (Client) { Client->Disconnect(); delete Client; Client = nullptr; }
     StopDebugTone();
     StopTestData();
@@ -141,6 +143,64 @@ void ULiveKitPublisherComponent::PushAudioPCM(const TArray<int16>& InterleavedFr
     }
 }
 
+bool ULiveKitPublisherComponent::CreateAudioTrack(FName TrackName, int32 TrackSampleRate, int32 TrackChannels, int32 BufferMs)
+{
+    if (!Client)
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("CreateAudioTrack called before LiveKit client is ready"));
+        return false;
+    }
+    if (TrackName.IsNone() || TrackSampleRate <= 0 || TrackChannels <= 0)
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("CreateAudioTrack invalid parameters (name=%s sr=%d ch=%d)"), *TrackName.ToString(), TrackSampleRate, TrackChannels);
+        return false;
+    }
+    if (AudioTracks.Contains(TrackName))
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("CreateAudioTrack skipped: '%s' already exists"), *TrackName.ToString());
+        return false;
+    }
+    TUniquePtr<LiveKitAudioTrack> Track = Client->CreateAudioTrack(TrackName.ToString(), TrackSampleRate, TrackChannels, BufferMs);
+    if (!Track.IsValid() || !Track->IsValid())
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("CreateAudioTrack failed for '%s'"), *TrackName.ToString());
+        return false;
+    }
+    AudioTracks.Add(TrackName, MoveTemp(Track));
+    UE_LOG(LogLiveKitBridge, Log, TEXT("Created LiveKit audio track '%s' (sr=%d, ch=%d, buffer=%dms)"), *TrackName.ToString(), TrackSampleRate, TrackChannels, BufferMs);
+    return true;
+}
+
+bool ULiveKitPublisherComponent::DestroyAudioTrack(FName TrackName)
+{
+    if (AudioTracks.Remove(TrackName) > 0)
+    {
+        UE_LOG(LogLiveKitBridge, Log, TEXT("Destroyed LiveKit audio track '%s'"), *TrackName.ToString());
+        return true;
+    }
+    UE_LOG(LogLiveKitBridge, Warning, TEXT("DestroyAudioTrack: track '%s' not found"), *TrackName.ToString());
+    return false;
+}
+
+void ULiveKitPublisherComponent::PushAudioPCMOnTrack(FName TrackName, const TArray<int16>& InterleavedFrames, int32 FramesPerChannel)
+{
+    if (InterleavedFrames.Num() == 0)
+    {
+        return;
+    }
+    TUniquePtr<LiveKitAudioTrack>* TrackPtr = AudioTracks.Find(TrackName);
+    if (!TrackPtr || !TrackPtr->IsValid() || !(*TrackPtr)->IsValid())
+    {
+        UE_LOG(LogLiveKitBridge, Verbose, TEXT("PushAudioPCMOnTrack: track '%s' not available"), *TrackName.ToString());
+        return;
+    }
+    if (!(*TrackPtr)->PublishPCM(InterleavedFrames.GetData(), (size_t)FramesPerChannel))
+    {
+        const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
+        UE_LOG(LogLiveKitBridge, Verbose, TEXT("PushAudioPCMOnTrack '%s' failed (%s)"), *TrackName.ToString(), Reason.IsEmpty()?TEXT("no reason"): *Reason);
+    }
+}
+
 void ULiveKitPublisherComponent::SendMocap(const TArray<uint8>& Payload, bool bReliable)
 {
     if (Client && Payload.Num() > 0)
@@ -174,6 +234,91 @@ void ULiveKitPublisherComponent::SendMocap(const TArray<uint8>& Payload, bool bR
             });
         }
     }
+}
+
+bool ULiveKitPublisherComponent::RegisterMocapChannel(FName ChannelName, const FString& Label, bool bReliable, bool bOrdered)
+{
+    if (!Client)
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("RegisterMocapChannel called before LiveKit client is ready"));
+        return false;
+    }
+    if (ChannelName.IsNone() || Label.IsEmpty())
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("RegisterMocapChannel invalid args (channel=%s label empty=%s)"), *ChannelName.ToString(), Label.IsEmpty()?TEXT("true"):TEXT("false"));
+        return false;
+    }
+    if (DataChannels.Contains(ChannelName))
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("RegisterMocapChannel skipped: '%s' already exists"), *ChannelName.ToString());
+        return false;
+    }
+    TUniquePtr<LiveKitDataChannel> Channel = Client->CreateDataChannel(Label, bReliable, bOrdered);
+    if (!Channel.IsValid() || !Channel->IsValid())
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("RegisterMocapChannel failed to create '%s'"), *ChannelName.ToString());
+        return false;
+    }
+    DataChannels.Add(ChannelName, MoveTemp(Channel));
+    UE_LOG(LogLiveKitBridge, Log, TEXT("Registered mocap channel '%s' (label='%s', reliable=%s, ordered=%s)"),
+        *ChannelName.ToString(), *Label, bReliable?TEXT("true"):TEXT("false"), bOrdered?TEXT("true"):TEXT("false"));
+    return true;
+}
+
+bool ULiveKitPublisherComponent::UnregisterMocapChannel(FName ChannelName)
+{
+    if (DataChannels.Remove(ChannelName) > 0)
+    {
+        UE_LOG(LogLiveKitBridge, Log, TEXT("Unregistered mocap channel '%s'"), *ChannelName.ToString());
+        return true;
+    }
+    UE_LOG(LogLiveKitBridge, Warning, TEXT("UnregisterMocapChannel: channel '%s' not found"), *ChannelName.ToString());
+    return false;
+}
+
+bool ULiveKitPublisherComponent::SendMocapOnChannel(FName ChannelName, const TArray<uint8>& Payload)
+{
+    if (!Client || Payload.Num() == 0)
+    {
+        return false;
+    }
+    TUniquePtr<LiveKitDataChannel>* ChannelPtr = DataChannels.Find(ChannelName);
+    if (!ChannelPtr || !ChannelPtr->IsValid() || !(*ChannelPtr)->IsValid())
+    {
+        UE_LOG(LogLiveKitBridge, Warning, TEXT("SendMocapOnChannel: channel '%s' unavailable"), *ChannelName.ToString());
+        return false;
+    }
+    const bool bReliable = (*ChannelPtr)->IsReliable();
+    const bool bOk = (*ChannelPtr)->Send(Payload);
+    if (!bOk)
+    {
+        const FString Reason = Client ? Client->GetLastErrorMessage() : FString();
+        if (!Reason.IsEmpty())
+        {
+            UE_LOG(LogLiveKitBridge, Verbose, TEXT("SendMocapOnChannel '%s' failed (%d bytes, reliable=%s): %s"), *ChannelName.ToString(), Payload.Num(), bReliable?TEXT("true"):TEXT("false"), *Reason);
+            AsyncTask(ENamedThreads::GameThread, [this, n = Payload.Num(), b = bReliable, Reason]()
+            {
+                if (IsValid(this)) { OnMocapSendFailed(n, b, Reason); }
+            });
+        }
+        else
+        {
+            UE_LOG(LogLiveKitBridge, Verbose, TEXT("SendMocapOnChannel '%s' failed (%d bytes, reliable=%s)"), *ChannelName.ToString(), Payload.Num(), bReliable?TEXT("true"):TEXT("false"));
+            AsyncTask(ENamedThreads::GameThread, [this, n = Payload.Num(), b = bReliable]()
+            {
+                if (IsValid(this)) { OnMocapSendFailed(n, b, TEXT("Send failed")); }
+            });
+        }
+    }
+    else
+    {
+        UE_LOG(LogLiveKitBridge, Log, TEXT("SendMocapOnChannel '%s' succeeded (%d bytes, reliable=%s)"), *ChannelName.ToString(), Payload.Num(), bReliable?TEXT("true"):TEXT("false"));
+        AsyncTask(ENamedThreads::GameThread, [this, n = Payload.Num(), b = bReliable]()
+        {
+            if (IsValid(this)) { OnMocapSent(n, b); }
+        });
+    }
+    return bOk;
 }
 
 /* static */ void ULiveKitPublisherComponent::DataThunk(void* User, const uint8_t* bytes, size_t len)

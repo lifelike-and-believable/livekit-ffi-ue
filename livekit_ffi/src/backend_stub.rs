@@ -46,6 +46,19 @@ pub struct LkDataStats {
     pub lossy_dropped: i64,
 }
 
+#[repr(C)]
+pub struct LkAudioTrackConfig {
+    pub track_name: *const c_char,
+    pub sample_rate: c_int,
+    pub channels: c_int,
+    pub buffer_ms: c_int,
+}
+
+#[repr(C)]
+pub struct LkAudioTrackHandle {
+    _private: [u8; 0],
+}
+
 struct ClientState { connected: bool }
 struct Client(std::sync::Arc<std::sync::Mutex<ClientState>>);
 
@@ -148,6 +161,43 @@ struct Client(std::sync::Arc<std::sync::Mutex<ClientState>>);
 ) -> LkResult {
     if client.is_null() { return err("client null", 1); }
     if channels <= 0 || sample_rate <= 0 { return err("bad params", 3); }
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_audio_track_create(
+    client: *mut LkClientHandle,
+    _config: *const LkAudioTrackConfig,
+    out_track: *mut *mut LkAudioTrackHandle,
+) -> LkResult {
+    if client.is_null() { return err("client null", 1); }
+    if out_track.is_null() { return err("out_track null", 1); }
+    unsafe {
+        *out_track = Box::into_raw(Box::new(LkAudioTrackHandle { _private: [] }));
+    }
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_audio_track_destroy(track: *mut LkAudioTrackHandle) -> LkResult {
+    if track.is_null() {
+        return err("track null", 1);
+    }
+    unsafe {
+        drop(Box::from_raw(track));
+    }
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_audio_track_publish_pcm_i16(
+    track: *mut LkAudioTrackHandle,
+    _pcm: *const i16,
+    _frames_per_channel: usize,
+) -> LkResult {
+    if track.is_null() {
+        return err("track null", 1);
+    }
     ok()
 }
 

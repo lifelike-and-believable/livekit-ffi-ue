@@ -4,6 +4,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Components/ActorComponent.h"
 #include "livekit_ffi.h"
+#include "LiveKitClient.hpp"
 
 UENUM(BlueprintType)
 enum class ELiveKitClientRole : uint8
@@ -50,6 +51,12 @@ public:
 
     UFUNCTION(BlueprintCallable, Category="LiveKit")
     void SendMocap(const TArray<uint8>& Payload, bool bReliable);
+    UFUNCTION(BlueprintCallable, Category="LiveKit|Data")
+    bool RegisterMocapChannel(FName ChannelName, const FString& Label, bool bReliable, bool bOrdered = true);
+    UFUNCTION(BlueprintCallable, Category="LiveKit|Data")
+    bool UnregisterMocapChannel(FName ChannelName);
+    UFUNCTION(BlueprintCallable, Category="LiveKit|Data")
+    bool SendMocapOnChannel(FName ChannelName, const TArray<uint8>& Payload);
 
     // Test controls
     UFUNCTION(BlueprintCallable, Category="LiveKit|Test") void StartDebugTone();
@@ -79,8 +86,16 @@ public:
     UFUNCTION(BlueprintImplementableEvent, Category="LiveKit|Data")
     void OnMocapSendFailed(int32 Bytes, bool bReliable, const FString& Reason);
 
+    UFUNCTION(BlueprintCallable, Category="LiveKit|Audio")
+    bool CreateAudioTrack(FName TrackName, int32 TrackSampleRate, int32 TrackChannels, int32 BufferMs = 1000);
+    UFUNCTION(BlueprintCallable, Category="LiveKit|Audio")
+    bool DestroyAudioTrack(FName TrackName);
+    void PushAudioPCMOnTrack(FName TrackName, const TArray<int16>& InterleavedFrames, int32 FramesPerChannel);
+
 private:
     class LiveKitClient* Client = nullptr;
+    TMap<FName, TUniquePtr<LiveKitDataChannel>> DataChannels;
+    TMap<FName, TUniquePtr<LiveKitAudioTrack>> AudioTracks;
 
     // C callback thunks
     static void DataThunk(void* User, const uint8_t* bytes, size_t len);
