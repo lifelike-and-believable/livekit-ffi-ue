@@ -345,6 +345,7 @@ pub extern "C" fn lk_client_create() -> *mut LkClientHandle {
         data_cb: None,
         data_cb_ex: None,
         audio_cb: None,
+        audio_cb_ex: None,
         audio_format_change_cb: None,
         connection_cb: None,
         role: LkRole::Both,

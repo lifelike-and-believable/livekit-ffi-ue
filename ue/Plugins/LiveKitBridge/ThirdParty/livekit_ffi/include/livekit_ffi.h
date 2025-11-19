@@ -100,6 +100,15 @@ typedef void (*LkDataCallbackEx)(void* user, const char* label, LkReliability re
 typedef void (*LkAudioCallback)(void* user, const int16_t* pcm_interleaved, size_t frames_per_channel, int32_t channels, int32_t sample_rate);
 
 /**
+ * Extended audio callback with per-subject identification.
+ * Provides participant name and track name for each audio frame.
+ * - participant_name: name of the participant (never NULL)
+ * - track_name: name of the audio track (never NULL)
+ * NOTE: Callbacks may be invoked on background threads. Never block internally.
+ */
+typedef void (*LkAudioCallbackEx)(void* user, const int16_t* pcm_interleaved, size_t frames_per_channel, int32_t channels, int32_t sample_rate, const char* participant_name, const char* track_name);
+
+/**
  * Audio format change notification callback.
  * Called when the incoming audio format changes.
  * NOTE: Callbacks may be invoked on background threads. Never block internally.
@@ -170,6 +179,13 @@ LkResult lk_client_set_data_callback_ex(LkClientHandle*, LkDataCallbackEx cb, vo
  * Set audio callback.
  */
 LkResult lk_client_set_audio_callback(LkClientHandle*, LkAudioCallback cb, void* user);
+
+/**
+ * Set extended audio callback with per-subject identification.
+ * Provides participant and track names for each audio frame.
+ * Overrides any previously set standard audio callback.
+ */
+LkResult lk_client_set_audio_callback_ex(LkClientHandle*, LkAudioCallbackEx cb, void* user);
 
 /**
  * Set audio format change callback.
