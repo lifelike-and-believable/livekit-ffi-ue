@@ -631,18 +631,26 @@ pub extern "C" fn lk_connect_with_role(
             g.rt.spawn(async move {
                 while let Some(ev) = events.recv().await {
                     match ev {
-                        RoomEvent::ByteStreamOpened { reader, topic: _, participant_identity: _ } => {
+                        RoomEvent::ByteStreamOpened { reader, topic, participant_identity: _ } => {
                             let Some(reader) = reader.take() else { continue; };
                             // Read all bytes, then invoke callback if set
                             let bytes_res = reader.read_all().await;
                             if let Ok(content) = bytes_res {
                                 // Copy to Vec to ensure stable backing memory for callback
                                 let buf: Vec<u8> = content.to_vec();
-                                lk_log_arc!(client_arc, LkLogLevel::Debug, "ByteStreamOpened: received {} bytes", buf.len());
+                                lk_log_arc!(client_arc, LkLogLevel::Debug, "ByteStreamOpened: received {} bytes on topic '{}'", buf.len(), topic);
                                 let guard_opt = client_arc.lock().ok();
                                 if let Some(guard) = guard_opt {
-                                    if let Some((cb, user)) = guard.data_cb.as_ref() {
-                                        // SAFETY: We call user-provided callback synchronously
+                                    // Invoke extended callback with label if set, otherwise fall back to basic callback
+                                    if let Some((cb, user)) = guard.data_cb_ex.as_ref() {
+                                        // Create C string for the topic label
+                                        let topic_cstr = std::ffi::CString::new(topic.as_str()).unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
+                                        // SAFETY: We call user-provided callback with stable C string and buffer
+                                        // Note: Reliability defaults to Reliable since that's the safe default and
+                                        // LiveKit's ByteStreamOpened event doesn't provide explicit reliability info
+                                        cb(user.0, topic_cstr.as_ptr(), LkReliability::Reliable, buf.as_ptr(), buf.len());
+                                    } else if let Some((cb, user)) = guard.data_cb.as_ref() {
+                                        // SAFETY: We call user-provided callback synchronously with stable buffer
                                         cb(user.0, buf.as_ptr(), buf.len());
                                     }
                                 }
