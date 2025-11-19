@@ -709,7 +709,7 @@ pub extern "C" fn lk_connect_with_role(
                                                 let sr = frame.sample_rate as c_int;
                                                 let track_name_cstr = CString::new(track_name.as_str()).unwrap_or_default();
                                                 let participant_name_cstr = CString::new(participant_name.as_str()).unwrap_or_default();
-                                                cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, track_name_cstr.as_ptr(), participant_name_cstr.as_ptr());
+                                                cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, participant_name_cstr.as_ptr(), track_name_cstr.as_ptr());
                                             } else if let Some((cb, user)) = guard.audio_cb.as_ref() {
                                                 let frames_per_channel = frame.samples_per_channel as usize;
                                                 let ch = frame.num_channels as c_int;
@@ -858,7 +858,7 @@ pub extern "C" fn lk_connect_with_role_async(
                                                     let sr = frame.sample_rate as c_int;
                                                     let track_name_cstr = CString::new(track_name.as_str()).unwrap_or_default();
                                                     let participant_name_cstr = CString::new(participant_name.as_str()).unwrap_or_default();
-                                                    cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, track_name_cstr.as_ptr(), participant_name_cstr.as_ptr());
+                                                    cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, participant_name_cstr.as_ptr(), track_name_cstr.as_ptr());
                                                 } else if let Some((cb, user)) = guard.audio_cb.as_ref() {
                                                     let frames_per_channel = frame.samples_per_channel as usize;
                                                     let ch = frame.num_channels as c_int;
