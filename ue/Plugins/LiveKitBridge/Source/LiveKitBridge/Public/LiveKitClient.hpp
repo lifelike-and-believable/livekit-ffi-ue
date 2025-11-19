@@ -223,6 +223,15 @@ public:
         return ok;
     }
 
+    bool SetAudioCallbackEx(LkAudioCallbackEx Cb, void* User)
+    {
+        LkResult r = lk_client_set_audio_callback_ex(Handle, Cb, User);
+        const bool ok = (r.code == 0);
+        if (!ok) { CaptureError(r); if (r.message) { UE_LOG(LogTemp, Warning, TEXT("LiveKit set audio callback (ex): %s"), UTF8_TO_TCHAR(r.message)); lk_free_str((char*)r.message); } }
+        else if (r.message) { lk_free_str((char*)r.message); ClearError(); }
+        return ok;
+    }
+
     bool IsReady() const
     {
         return Handle && lk_client_is_ready(Handle) != 0;

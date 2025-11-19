@@ -303,6 +303,7 @@ struct ClientState {
     data_cb: Option<(extern "C" fn(*mut c_void, *const u8, usize), UserPtr)>,
     data_cb_ex: Option<(extern "C" fn(*mut c_void, *const c_char, LkReliability, *const u8, usize), UserPtr)>,
     audio_cb: Option<(extern "C" fn(*mut c_void, *const i16, usize, c_int, c_int), UserPtr)>,
+    audio_cb_ex: Option<(extern "C" fn(*mut c_void, *const i16, usize, c_int, c_int, *const c_char, *const c_char), UserPtr)>,
     audio_format_change_cb: Option<(extern "C" fn(*mut c_void, c_int, c_int), UserPtr)>,
     connection_cb: Option<(extern "C" fn(*mut c_void, LkConnectionState, c_int, *const c_char), UserPtr)>,
     
@@ -388,6 +389,27 @@ pub extern "C" fn lk_client_set_audio_callback(
     let c = unsafe { &*(client as *const Client) };
     let mut g = c.0.lock().unwrap();
     g.audio_cb = cb.map(|f| (f, UserPtr(user)));
+    // Clear extended callback if standard callback is set
+    if cb.is_some() {
+        g.audio_cb_ex = None;
+    }
+    ok()
+}
+
+#[no_mangle]
+pub extern "C" fn lk_client_set_audio_callback_ex(
+    client: *mut LkClientHandle,
+    cb: Option<extern "C" fn(user: *mut c_void, pcm: *const i16, frames_per_channel: usize, channels: c_int, sample_rate: c_int, participant_name: *const c_char, track_name: *const c_char)>,
+    user: *mut c_void,
+) -> LkResult {
+    if client.is_null() { return err(1, "client null"); }
+    let c = unsafe { &*(client as *const Client) };
+    let mut g = c.0.lock().unwrap();
+    g.audio_cb_ex = cb.map(|f| (f, UserPtr(user)));
+    // Clear standard callback if extended callback is set
+    if cb.is_some() {
+        g.audio_cb = None;
+    }
     ok()
 }
 
@@ -650,14 +672,16 @@ pub extern "C" fn lk_connect_with_role(
                                 }
                             }
                         }
-                        RoomEvent::TrackSubscribed { track, publication, participant: _ } => {
+                        RoomEvent::TrackSubscribed { track, publication, participant } => {
                             // Remote audio subscribed - set up a NativeAudioStream and forward frames to audio callback
                             if let RemoteTrack::Audio(audio) = track {
-                                lk_log_arc!(client_arc, LkLogLevel::Info, "TrackSubscribed audio: name='{}', sid='{}'", publication.name(), publication.sid());
+                                lk_log_arc!(client_arc, LkLogLevel::Info, "TrackSubscribed audio: name='{}', sid='{}', participant='{}'", publication.name(), publication.sid(), participant.identity());
                                 // Extract underlying RTC track to build a stream reader
                                 let rtc = audio.rtc_track();
                                 let client_arc2 = client_arc.clone();
-                                
+                                let track_name = publication.name().to_string();
+                                let participant_name = participant.identity().to_string();
+
                                 // Use configured audio output format
                                 let (sample_rate, channels) = {
                                     let guard_opt = client_arc.lock().ok();
@@ -667,7 +691,7 @@ pub extern "C" fn lk_connect_with_role(
                                         (48_000u32, 1u32)
                                     }
                                 };
-                                
+
                                 // Spawn a task to poll audio frames and invoke the user callback synchronously per frame
                                 tokio::spawn(async move {
                                     let mut stream = NativeAudioStream::new(rtc, sample_rate as i32, channels as i32);
@@ -677,7 +701,15 @@ pub extern "C" fn lk_connect_with_role(
                                         let buf: Vec<i16> = frame.data.as_ref().to_vec();
 
                                         if let Ok(guard) = client_arc2.lock() {
-                                            if let Some((cb, user)) = guard.audio_cb.as_ref() {
+                                            // Try extended callback first, fall back to standard callback
+                                            if let Some((cb, user)) = guard.audio_cb_ex.as_ref() {
+                                                let frames_per_channel = frame.samples_per_channel as usize;
+                                                let ch = frame.num_channels as c_int;
+                                                let sr = frame.sample_rate as c_int;
+                                                let track_name_cstr = CString::new(track_name.as_str()).unwrap_or_default();
+                                                let participant_name_cstr = CString::new(participant_name.as_str()).unwrap_or_default();
+                                                cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, track_name_cstr.as_ptr(), participant_name_cstr.as_ptr());
+                                            } else if let Some((cb, user)) = guard.audio_cb.as_ref() {
                                                 let frames_per_channel = frame.samples_per_channel as usize;
                                                 let ch = frame.num_channels as c_int;
                                                 let sr = frame.sample_rate as c_int;
@@ -804,11 +836,13 @@ pub extern "C" fn lk_connect_with_role_async(
                                     }
                                 }
                             }
-                            RoomEvent::TrackSubscribed { track, publication, participant: _ } => {
+                            RoomEvent::TrackSubscribed { track, publication, participant } => {
                                 if let RemoteTrack::Audio(audio) = track {
-                                    lk_log_arc!(client_arc2, LkLogLevel::Info, "TrackSubscribed audio: name='{}', sid='{}'", publication.name(), publication.sid());
+                                    lk_log_arc!(client_arc2, LkLogLevel::Info, "TrackSubscribed audio: name='{}', sid='{}', participant='{}'", publication.name(), publication.sid(), participant.identity());
                                     let rtc = audio.rtc_track();
                                     let client_arc3 = client_arc2.clone();
+                                    let track_name = publication.name().to_string();
+                                    let participant_name = participant.identity().to_string();
                                     let (sample_rate, channels) = if let Ok(guard) = client_arc2.lock() { (guard.audio_output_format.sample_rate as u32, guard.audio_output_format.channels as u32) } else { (48_000u32, 1u32) };
                                     tokio::spawn(async move {
                                         let mut stream = NativeAudioStream::new(rtc, sample_rate as i32, channels as i32);
@@ -816,7 +850,15 @@ pub extern "C" fn lk_connect_with_role_async(
                                         while let Some(frame) = stream.next().await {
                                             let buf: Vec<i16> = frame.data.as_ref().to_vec();
                                             if let Ok(guard) = client_arc3.lock() {
-                                                if let Some((cb, user)) = guard.audio_cb.as_ref() {
+                                                // Try extended callback first, fall back to standard callback
+                                                if let Some((cb, user)) = guard.audio_cb_ex.as_ref() {
+                                                    let frames_per_channel = frame.samples_per_channel as usize;
+                                                    let ch = frame.num_channels as c_int;
+                                                    let sr = frame.sample_rate as c_int;
+                                                    let track_name_cstr = CString::new(track_name.as_str()).unwrap_or_default();
+                                                    let participant_name_cstr = CString::new(participant_name.as_str()).unwrap_or_default();
+                                                    cb(user.0, buf.as_ptr(), frames_per_channel, ch, sr, track_name_cstr.as_ptr(), participant_name_cstr.as_ptr());
+                                                } else if let Some((cb, user)) = guard.audio_cb.as_ref() {
                                                     let frames_per_channel = frame.samples_per_channel as usize;
                                                     let ch = frame.num_channels as c_int;
                                                     let sr = frame.sample_rate as c_int;

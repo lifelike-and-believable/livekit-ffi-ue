@@ -347,6 +347,31 @@ bool ULiveKitPublisherComponent::SendMocapOnChannel(FName ChannelName, const TAr
     }
 }
 
+/* static */ void ULiveKitPublisherComponent::AudioThunkEx(void* User, const int16_t* pcm, size_t frames_per_channel, int32_t channels, int32_t sample_rate, const char* participant_name, const char* track_name)
+{
+    if (!User || !pcm || frames_per_channel == 0 || channels <= 0 || sample_rate <= 0 || !participant_name || !track_name) return;
+    ULiveKitPublisherComponent* Self = reinterpret_cast<ULiveKitPublisherComponent*>(User);
+    if (!IsValid(Self)) return;
+
+    // Log first frame and then every ~100 frames to avoid spam (with per-subject identification)
+    Self->AudioFrameCount++;
+    const FString ParticipantName = UTF8_TO_TCHAR(participant_name);
+    const FString TrackName = UTF8_TO_TCHAR(track_name);
+    if (!Self->bLoggedFirstAudioFrame)
+    {
+        Self->bLoggedFirstAudioFrame = true;
+        UE_LOG(LogLiveKitBridge, Log, TEXT("Remote audio frame: participant='%s' track='%s' sr=%d ch=%d fpc=%d"), *ParticipantName, *TrackName, sample_rate, channels, (int32)frames_per_channel);
+        AsyncTask(ENamedThreads::GameThread, [Self, sample_rate, channels, frames_per_channel]()
+        {
+            if (IsValid(Self)) { Self->OnFirstAudioReceived(sample_rate, channels, (int32)frames_per_channel); }
+        });
+    }
+    else if ((Self->AudioFrameCount % 100) == 0)
+    {
+        UE_LOG(LogLiveKitBridge, VeryVerbose, TEXT("Remote audio frame #%lld: participant='%s' track='%s' sr=%d ch=%d fpc=%d"), (long long)Self->AudioFrameCount, *ParticipantName, *TrackName, sample_rate, channels, (int32)frames_per_channel);
+    }
+}
+
 void ULiveKitPublisherComponent::StartDebugTone()
 {
     if (!GetWorld()) return;

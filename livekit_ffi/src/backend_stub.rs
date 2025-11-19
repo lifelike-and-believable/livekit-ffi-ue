@@ -91,6 +91,12 @@ struct Client(std::sync::Arc<std::sync::Mutex<ClientState>>);
     _user: *mut c_void
 ) -> LkResult { ok() }
 
+#[no_mangle] pub extern "C" fn lk_client_set_audio_callback_ex(
+    _client: *mut LkClientHandle,
+    _cb: Option<extern "C" fn(user:*mut c_void, pcm:*const i16, frames_per_channel:usize, channels:c_int, sample_rate:c_int, participant_name:*const c_char, track_name:*const c_char)>,
+    _user: *mut c_void
+) -> LkResult { ok() }
+
 #[no_mangle] pub extern "C" fn lk_set_audio_format_change_callback(
     _client: *mut LkClientHandle,
     _cb: Option<extern "C" fn(user:*mut c_void, sample_rate:c_int, channels:c_int)>,
